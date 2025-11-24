@@ -1,0 +1,12 @@
+[package]
+name = "yt-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+reqwest = { version = "0.11", features = ["json"] }
+tokio = { version = "1.40.0", features = ["macros", "rt"] }
+serde_json = "1.0"
+
+yt-search = "0.1.0"
+dirs = "6.0.0"
