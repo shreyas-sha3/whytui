@@ -3,6 +3,10 @@
 A terminal-based YouTube music player written in Rust.  
 Search, download, and play songs directly from the terminal.
 
+
+<img width="497" height="406" alt="image" src="https://github.com/user-attachments/assets/f732ab9b-1e44-4e73-ae32-718ed0f46015" />
+
+
 ## Features
 
 - Search for songs using YouTube
@@ -34,8 +38,9 @@ cargo run --release
 
 ## Usage
 
+* Simply press Enter for local playback
 * Type the song name and press Enter to search
-* Enter the number to play a song
+* Enter the number to play a song (or press Enter again to retry search)
 * Commands:
 
   * `stop` → stop current song
