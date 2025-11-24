@@ -1,3 +1,4 @@
+use colored::*;
 use reqwest::Client;
 use reqwest::header::{CONNECTION, HeaderMap, HeaderValue, ORIGIN, REFERER, USER_AGENT};
 use serde_json::json;
@@ -16,22 +17,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = build_client();
     let mut current_process: Option<Child> = None;
-    println!(
-        "\n
-
-        ██╗   ██╗████████╗       ██████╗██╗     ██╗
-        ╚██╗ ██╔╝╚══██╔══╝      ██╔════╝██║     ██║
-         ╚████╔╝    ██║   █████╗██║     ██║     ██║
-          ╚██╔╝     ██║   ╚════╝██║     ██║     ██║
-           ██║      ██║         ╚██████╗███████╗██║
-           ╚═╝      ╚═╝          ╚═════╝╚══════╝╚═╝
-
-           by:sha3
-"
-    );
+    load_banner(true);
 
     loop {
         let query = prompt_input("\n============\nSearch Song:\n============");
+        if query.trim().is_empty() {
+            println!("Playing offline song...");
+            if let Some(mut child) = current_process.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+
+            // start new shuffled song
+            current_process = shuffle_playback(&music_dir);
+            continue;
+        }
         if query.eq_ignore_ascii_case("exit") {
             if let Some(mut child) = current_process {
                 let _ = child.kill();
@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         display_songs(&songs);
         let choice = prompt_input(&format!(
-            "\n============\nSelect (1-{}):\n============",
+            "\n=============\nSelect (1-{}):\n=============",
             songs.len()
         ))
         .trim()
@@ -70,14 +70,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         download_if_needed(&client, selected_song, &file_path).await?;
 
-        // Swap playback
         if let Some(mut old_child) = current_process.take() {
             let _ = old_child.kill();
             let _ = old_child.wait();
-            println!("(Previous song stopped)");
         }
 
-        println!("\n▶︎ Playing: {}", selected_song.title);
+        // println!("\n▶︎ Playing: {}", selected_song.title);
         current_process = Some(play_song(&file_path)?);
     }
 
@@ -128,16 +126,35 @@ fn prompt_input(message: &str) -> String {
     input.trim().to_string()
 }
 
-fn clear_below_banner() {
+fn load_banner(first: bool) {
     use std::{
         io::{Write, stdout},
         thread,
         time::Duration,
     };
 
-    thread::sleep(Duration::from_millis(750));
-    print!("\x1B[6;0H\x1B[0J");
+    if !first {
+        thread::sleep(Duration::from_millis(1000));
+    }
+    print!("\x1B[2J\x1B[1;1H\n");
     stdout().flush().unwrap();
+    println!(
+        "{}",
+        r#"
+   =============================================
+
+    ██╗   ██╗████████╗        ██████╗██╗     ██╗
+    ╚██╗ ██╔╝╚══██╔══╝       ██╔════╝██║     ██║
+     ╚████╔╝    ██║   █████╗ ██║     ██║     ██║
+      ╚██╔╝     ██║   ╚════╝ ██║     ██║     ██║
+       ██║      ██║          ╚██████╗███████╗██║
+       ╚═╝      ╚═╝           ╚═════╝╚══════╝╚═╝
+
+        𝕓𝕪:𝕤𝕙𝕒𝟛
+   =============================================
+"#
+        .bright_red()
+    );
 }
 
 async fn download_if_needed(
@@ -147,7 +164,6 @@ async fn download_if_needed(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if file_path.exists() {
         println!("Song found in cache.");
-        clear_below_banner();
         return Ok(());
     }
 
@@ -219,11 +235,44 @@ async fn download_if_needed(
     file.write_all(&last_bytes).await?;
     file.flush().await?;
     println!("Download Complete");
-    clear_below_banner();
     Ok(())
 }
 
+fn shuffle_playback(music_dir: &PathBuf) -> Option<Child> {
+    use rand::rng;
+    use rand::seq::IndexedRandom;
+
+    let entries = std::fs::read_dir(music_dir).ok()?;
+    let mut songs = Vec::new();
+
+    for e in entries.flatten() {
+        let path = e.path();
+        if let Some(ext) = path.extension() {
+            if ext == "webm" {
+                songs.push(path);
+            }
+        }
+    }
+
+    if songs.is_empty() {
+        println!("No local songs found.");
+        return None;
+    }
+
+    let mut rng = rng();
+    let song = songs.choose(&mut rng)?;
+    play_song(song).ok()
+}
+
 fn play_song(file_path: &PathBuf) -> Result<Child, Box<dyn std::error::Error>> {
+    load_banner(false);
+    if let Some(name) = file_path.file_stem() {
+        println!(
+            "\n{} {}",
+            "▶︎ Playing:".bright_green().bold(),
+            name.to_string_lossy().bright_white()
+        );
+    }
     let child = Command::new("ffplay")
         .arg("-nodisp")
         .arg("-autoexit")
