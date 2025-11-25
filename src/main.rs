@@ -12,8 +12,8 @@ use yt_search::{SearchFilters, VideoResult, YouTubeSearch};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Save songs to ~/Music/ytcli-songs
     let mut music_dir = dirs::home_dir().ok_or("Cannot find home directory")?;
-    music_dir.push("Music/ytcli-songs");
-    std::fs::create_dir_all(&music_dir)?;
+    music_dir.push("Music");
+    music_dir.push("ytcli-songs");
 
     let client = build_client();
     let mut current_process: Option<Child> = None;
@@ -65,16 +65,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut file_path = music_dir.clone();
         file_path.push(format!("{}.webm", selected_song.title));
 
-        download_if_needed(&client, selected_song, &file_path).await?;
-
+        // kill before next playback hahahaha
         if let Some(mut old_child) = current_process.take() {
             let _ = old_child.kill();
             let _ = old_child.wait();
         }
 
-        // println!("\n▶︎ Playing: {}", selected_song.title);
-        current_process = Some(play_song(&file_path)?);
-    }
+        if is_cached(&file_path) {
+            // Play locally
+            current_process = Some(play_song(
+                &file_path.to_str().unwrap(),
+                &selected_song.title,
+            )?);
+        } else {
+            // Stream instantly
+            let stream_url = fetch_url(&client, selected_song).await?;
+            current_process = Some(play_song(&stream_url, &selected_song.title)?);
+        }
+
+        // download_song(&client, selected_song, &file_path).await?;
 
     Ok(())
 }
@@ -130,7 +139,7 @@ fn load_banner(first: bool) {
         time::Duration,
     };
     if !first {
-        thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_millis(750));
     }
     print!("\x1B[2J\x1B[1;1H\n");
     stdout().flush().unwrap();
@@ -157,86 +166,78 @@ fn format_prompt(title: &str) -> String {
     let title_colored = title.bright_blue().bold();
     format!("\n{line}\n{title_colored}\n{line}\n")
 }
-async fn download_if_needed(
-    client: &Client,
-    song: &VideoResult,
-    file_path: &PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
+
+fn is_cached(file_path: &PathBuf) -> bool {
     if file_path.exists() {
         println!("Song found in cache.");
-        return Ok(());
+        true
+    } else {
+        false
     }
-
-    println!("Downloading metadata...");
-    let payload = json!({
-        "context": { "client": { "clientName": "ANDROID", "clientVersion": "19.09.37" } },
-        "videoId": song.video_id
-    });
+}
+async fn fetch_url(
+    client: &Client,
+    song: &VideoResult,
+) -> Result<String, Box<dyn std::error::Error>> {
+    println!("Fetching stream URL...");
+    let payload = json!({ "context": { "client": { "clientName": "ANDROID", "clientVersion": "19.09.37" }}, "videoId": song.video_id });
     let res = client
         .post("https://www.youtube.com/youtubei/v1/player")
         .json(&payload)
         .send()
         .await?;
     let data: serde_json::Value = res.json().await?;
-    let formats = data["streamingData"]["adaptiveFormats"]
-        .as_array()
-        .expect("Format Error");
-
-    let mut best_url = String::new();
+    let formats = data["streamingData"]["adaptiveFormats"].as_array().unwrap();
+    let mut best = None;
     let mut best_bitrate = 0;
-    let mut total_size: u64 = 0;
-
     for f in formats {
         if let Some(mime) = f["mimeType"].as_str() {
             if mime.starts_with("audio/webm") {
                 let bitrate = f["bitrate"].as_i64().unwrap_or(0);
                 if bitrate > best_bitrate {
                     best_bitrate = bitrate;
-                    best_url = f["url"].as_str().unwrap_or("").to_string();
-                    total_size = f["contentLength"]
-                        .as_str()
-                        .unwrap_or("0")
-                        .parse()
-                        .unwrap_or(0);
+                    best = f["url"].as_str().map(|s| s.to_string());
                 }
             }
         }
     }
-
-    if total_size == 0 {
-        println!("Error: No size.");
-        return Ok(());
-    }
-
-    println!(
-        "Downloading Highest Quality -> {} kbps...",
-        best_bitrate / 1000
-    );
-    let start_last = total_size * 3 / 4;
-    let end_last = total_size - 1;
-
-    let last_bytes = client
-        .get(&best_url)
-        .header("Range", format!("bytes={}-{}", start_last, end_last))
-        .send()
-        .await?
-        .bytes()
-        .await?;
-    let first_bytes = client
-        .get(&best_url)
-        .header("Range", format!("bytes=0-{}", start_last - 1))
-        .send()
-        .await?
-        .bytes()
-        .await?;
-
-    let mut file = File::create(file_path).await?;
-    file.write_all(&first_bytes).await?;
-    file.write_all(&last_bytes).await?;
-    file.flush().await?;
-    println!("Download Complete");
-    Ok(())
+    Ok(best.ok_or("No stream URL found")?)
 }
+
+// async fn download_song(
+//     client: Client,
+//     url: String,
+//     file_path: PathBuf,
+// ) -> Result<(), Box<dyn std::error::Error>> {
+//     println!(
+//         "Downloading Highest Quality -> {} kbps...",
+//         best_bitrate / 1000
+//     );
+//     let start_last = total_size * 3 / 4;
+//     let end_last = total_size - 1;
+
+//     let last_bytes = client
+//         .get(&best_url)
+//         .header("Range", format!("bytes={}-{}", start_last, end_last))
+//         .send()
+//         .await?
+//         .bytes()
+//         .await?;
+//     let first_bytes = client
+//         .get(&best_url)
+//         .header("Range", format!("bytes=0-{}", start_last - 1))
+//         .send()
+//         .await?
+//         .bytes()
+//         .await?;
+
+//     let mut file = File::create(file_path).await?;
+//     file.write_all(&first_bytes).await?;
+//     file.write_all(&last_bytes).await?;
+//     file.flush().await?;
+//     println!("Download Complete");
+//     Ok(())
+// }
 
 fn shuffle_playback(music_dir: &PathBuf) -> Option<Child> {
     use rand::rng;
@@ -261,24 +262,31 @@ fn shuffle_playback(music_dir: &PathBuf) -> Option<Child> {
 
     let mut rng = rng();
     let song = songs.choose(&mut rng)?;
-    play_song(song).ok()
+    play_song(
+        song.to_str().unwrap(),
+        &song.file_stem().unwrap().to_string_lossy(),
+    )
+    .ok()
 }
 
-fn play_song(file_path: &PathBuf) -> Result<Child, Box<dyn std::error::Error>> {
-    load_banner(false);
-    if let Some(name) = file_path.file_stem() {
-        println!(
-            "\n{} {}",
-            "▶︎ Playing:".bright_green().bold(),
-            name.to_string_lossy().bright_white()
-        );
-    }
+fn play_song(source: &str, name: &str) -> Result<Child, Box<dyn std::error::Error>> {
     let child = Command::new("ffplay")
         .arg("-nodisp")
         .arg("-autoexit")
         .arg("-hide_banner")
-        .arg(file_path.to_str().unwrap())
+        .arg(source)
         .stderr(Stdio::null())
         .spawn()?;
+    println!(
+        "\n{} {}",
+        "Up next:".bright_yellow().bold(),
+        name.bright_white()
+    );
+    load_banner(false);
+    println!(
+        "\n{} {}",
+        "▶︎ Playing:".bright_green().bold(),
+        name.bright_white()
+    );
     Ok(child)
 }
