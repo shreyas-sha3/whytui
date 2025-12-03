@@ -1,6 +1,0 @@
-- [X] pause,seek
-- [ ] queues
-- [ ] cache songs/store to disk from memory
-- [ ] autoplay
-- [ ] reimpliment ytmusic-api for rust
-- [ ] proper tui using ratatui

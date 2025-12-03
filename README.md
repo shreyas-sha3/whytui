@@ -24,16 +24,10 @@ git clone https://github.com/shreyas-sha3/whytui.git
 cd whytui
 ````
 
-2. Build the project with Cargo:
+2. Run the binary:
 
 ```bash
-cargo build --release
-```
-
-3. Run the binary:
-
-```bash
-cargo run --release
+cargo run 
 ```
 
 ## Usage
@@ -43,10 +37,23 @@ cargo run --release
 * Enter the number to play a song (or press Enter again to retry search)
 * Commands:
 
-  * `stop` → stop current song
-  * `exit` → quit the application
+  * `pause` → pause the song
+  * `<\>`   → seek song in seconds
+  * `stop`  → stop current song
+  * `exit`  → quit the application
 
 ## Requirements
 
 * Rust 
-* `ffplay` installed and in PATH
+* `mpv` installed and in PATH
+
+
+## TODO
+
+- [X] pause,seek
+- [X] progress bar
+- [ ] queues
+- [ ] cache songs/store to disk from memory
+- [ ] autoplay similar songs
+- [ ] reimpliment ytmusic-api for rust
+- [ ] proper tui using ratatui
