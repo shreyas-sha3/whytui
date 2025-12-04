@@ -1,5 +1,5 @@
 [package]
-name = "why-tui"
+name = "whytui"
 version = "0.1.0"
 edition = "2024"
 

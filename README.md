@@ -17,28 +17,38 @@ Search, download, and play songs directly from the terminal.
 
 ## Installation
 
-1. Clone the repository:
+1. Linux:
 
 ```bash
-git clone https://github.com/shreyas-sha3/whytui.git
-cd whytui
+curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Latest/whytui-linux-x86_64 && chmod +x whytui && sudo mv whytui /usr/local/bin/
 ````
 
-2. Run the binary:
+2. MacOS:
 
 ```bash
-cargo run 
+curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Latest/whytui-macos-x86_64 && chmod +x whytui && sudo mv whytui /usr/local/bin/
 ```
 
+ 
 ## Usage
 
-* Simply press Enter for local playback
-* Type the song name and press Enter to search
-* Enter the number to play a song (or press Enter again to retry search)
+
+### At `Search / Command:`
+- Press Enter: Play a random local song / add it to queue  
+- Type a song name: Search for a song.  
+- Type a command (`pause`, `next`) and press Enter.
+
+### At `Select (1-5):`
+- Enter a number: Play the selected song immediately.  
+- Enter `q` followed by a number (e.g., `q2`): Add the selected song to the queue.  
+- Press Enter without a number: Retry or cancel the search.
+
 * Commands:
 
-  * `pause` → pause the song
-  * `<\>`   → seek song in seconds
+  * `p | pause`  → pause the song
+  * `n | next`  → play next song in the queue
+  * `c | clear`  → clear the queue
+  * `< / >`   → seek song in seconds (e.g., `>10` to seek 10 seconds forward)
   * `stop`  → stop current song
   * `exit`  → quit the application
 
@@ -52,7 +62,7 @@ cargo run
 
 - [X] pause,seek
 - [X] progress bar
-- [ ] queues
+- [X] queues
 - [ ] cache songs/store to disk from memory
 - [ ] autoplay similar songs
 - [ ] reimpliment ytmusic-api for rust

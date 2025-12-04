@@ -96,6 +96,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::io::stdout().flush()?;
                 continue;
             }
+            "c" | "clear" => {
+                {
+                    let mut q = SONG_QUEUE.write().unwrap();
+                    q.clear();
+                }
+                load_banner("");
+                continue;
+            }
             "p" | "pause" => {
                 if currently_playing.is_some() {
                     toggle_pause();
@@ -379,7 +387,7 @@ fn shuffle_play(dir: &PathBuf) -> Result<Option<(String, String)>, Box<dyn std::
 /// NETWORK & SEARCH
 /// -------------------------------------------------------------------
 async fn search_songs(
-    client: &Client,
+    _client: &Client,
     q: &str,
 ) -> Result<Vec<VideoResult>, Box<dyn std::error::Error>> {
     let yt = YouTubeSearch::new(None, true)?;
