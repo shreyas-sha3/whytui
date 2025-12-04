@@ -11,12 +11,14 @@ use std::thread;
 use std::time::Duration;
 // use tokio::fs::File;
 // use tokio::io::AsyncWriteExt;
-use yt_search::{SearchFilters, VideoResult, YouTubeSearch};
+use std::sync::mpsc;
+use yt_search::{SearchFilters, VideoResult, YouTubeSearch}; // Ensure this is imported
 
 /// -------------------------------------------------------------------
 /// MAIN APPLICATION
 /// -------------------------------------------------------------------
 static SONG_MONITOR: RwLock<Option<Arc<AtomicBool>>> = RwLock::new(None);
+static SONG_QUEUE: RwLock<Vec<(String, String)>> = RwLock::new(Vec::new());
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,24 +26,64 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = build_client();
     let mut currently_playing: Option<Child> = None;
 
+    //transmitter (sends any input for Search/Command)
+    //reciever (running every 250 ms.. checks if song ended plays next in queue if yes)
+    let (tx, rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        loop {
+            let mut s = String::new();
+            if std::io::stdin().read_line(&mut s).is_ok() {
+                let _ = tx.send(s.trim().to_string());
+            }
+        }
+    });
+
     load_banner("Nothing Playing");
+    std::io::stdout().flush()?;
 
     loop {
-        let input = prompt("\n\n> Search / Command: ");
+        //firstly checks if song is playing
+        if let Some(child) = &mut currently_playing {
+            if let Ok(Some(_)) = child.try_wait() {
+                currently_playing = None;
+                if let Some((src, name)) = queue_next() {
+                    currently_playing = Some(play_file(&src)?);
+                    load_banner(&name);
+                } else {
+                    load_banner("Nothing Playing");
+                }
+                load_banner("");
+                std::io::stdout().flush()?;
+            }
+        }
 
-        if input.trim().is_empty() {
-            stop_process(&mut currently_playing);
-            if let Some((child, name)) = shuffle_play(&music_dir)? {
-                currently_playing = Some(child);
-                load_banner(&name);
+        //check for any input from tx
+        let input = match rx.try_recv() {
+            Ok(s) => s,
+            //if nothing sleep for 250 ms for cpu relief (not the best idea)
+            Err(_) => {
+                thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+        };
+        //if empty query play local (add to queue if something playing)
+        if input.is_empty() {
+            if let Some((path, name)) = shuffle_play(&music_dir)? {
+                if currently_playing.is_some() {
+                    queue_add(path, name);
+                    load_banner("");
+                } else {
+                    currently_playing = Some(play_file(&path)?);
+                    load_banner(&name);
+                }
             } else {
-                println!("No local songs found to shuffle.");
+                println!("No local songs found.");
             }
             continue;
         }
 
         // special commands
-        match input.as_str() {
+        match input.to_lowercase().as_str() {
             "exit" => {
                 stop_process(&mut currently_playing);
                 load_banner("");
@@ -50,67 +92,86 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "stop" => {
                 stop_process(&mut currently_playing);
                 load_banner("Nothing Playing");
+                load_banner("");
+                std::io::stdout().flush()?;
                 continue;
             }
             "p" | "pause" => {
                 if currently_playing.is_some() {
                     toggle_pause();
                     load_banner("");
+                    std::io::stdout().flush()?;
                 }
+                continue;
+            }
+            "n" | "next" => {
+                stop_process(&mut currently_playing);
+                if let Some((p, name)) = queue_next() {
+                    currently_playing = Some(play_file(&p)?);
+                    load_banner(&name);
+                } else {
+                    load_banner("Nothing Playing");
+                }
+                load_banner("");
+                std::io::stdout().flush()?;
                 continue;
             }
             _ => {}
         }
 
-        if input.starts_with(">") {
+        if input.starts_with('>') || input.starts_with('<') {
             if let Ok(s) = input[1..].trim().parse::<i64>() {
-                seek(s);
-                load_banner("");
+                seek(if input.starts_with('<') { -s } else { s });
             }
-            continue;
-        }
-        if input.starts_with("<") {
-            if let Ok(s) = input[1..].trim().parse::<i64>() {
-                seek(-s);
-                load_banner("");
-            }
+            load_banner("");
+            std::io::stdout().flush()?;
             continue;
         }
 
-        // search if not a command
         let songs = search_songs(&client, &input).await?;
         if songs.is_empty() {
             println!("No results.");
+            load_banner("");
+            std::io::stdout().flush()?;
             continue;
         }
 
         show_songs(&songs);
-        let choice = prompt("Select (1-5): ")
-            .trim()
-            .parse::<usize>()
-            .unwrap_or(0);
+        print!("{}", "> Select (1-5): ".bright_white().bold());
+        std::io::stdout().flush()?;
+        //check if q is entered before index
+        if let Ok(sel) = rx.recv() {
+            let (idx, is_queue) = if sel.to_lowercase().starts_with('q') {
+                (sel[1..].parse::<usize>().unwrap_or(0), true)
+            } else {
+                (sel.parse::<usize>().unwrap_or(0), false)
+            };
 
-        if choice == 0 || choice > songs.len() {
-            continue;
+            if idx >= 1 && idx <= songs.len() {
+                let selected = &songs[idx - 1];
+                let path = music_dir.join(format!("{}.webm", selected.title));
+                let src = if path.exists() {
+                    path.to_string_lossy().to_string()
+                } else {
+                    fetch_stream_url(&client, selected).await?
+                };
+
+                if is_queue {
+                    queue_add(src, selected.title.clone());
+                } else {
+                    stop_process(&mut currently_playing);
+                    currently_playing = Some(play_file(&src)?);
+                    load_banner(&selected.title);
+                }
+            } else {
+                println!("Invalid index.");
+            }
         }
-
-        let selected = &songs[choice - 1];
-        let file_path = music_dir.join(format!("{}.webm", selected.title));
-
-        stop_process(&mut currently_playing);
-
-        // Play cached OR stream
-        if file_path.exists() {
-            currently_playing = Some(play_file(file_path.to_str().unwrap())?);
-        } else {
-            let url = fetch_stream_url(&client, selected).await?;
-            currently_playing = Some(play_file(&url)?);
-        }
-        load_banner(&selected.title);
+        load_banner("");
+        std::io::stdout().flush()?;
     }
     Ok(())
 }
-
 /// -------------------------------------------------------------------
 /// UI & MONITORING THREAD
 /// -------------------------------------------------------------------
@@ -160,7 +221,8 @@ fn load_banner(song_name: &str) {
         .truecolor(255, 126, 131)
     );
     println!("\n");
-
+    //print queue along with banner
+    queue_show();
     if !song_name.is_empty() {
         // SONG MONITORING MANAGEMENT
         {
@@ -173,15 +235,16 @@ fn load_banner(song_name: &str) {
             *monitor_guard = Some(new_stop);
         }
     }
+    print!("{}", "\n\n> Search / Command: ".bright_blue().bold());
 }
 
-fn prompt(msg: &str) -> String {
-    print!("{}", msg);
-    let _ = std::io::stdout().flush();
-    let mut s = String::new();
-    std::io::stdin().read_line(&mut s).unwrap();
-    s.trim().to_string()
-}
+// fn prompt(msg: &str) -> String {
+//     print!("{}", msg);
+//     let _ = std::io::stdout().flush();
+//     let mut s = String::new();
+//     std::io::stdin().read_line(&mut s).unwrap();
+//     s.trim().to_string()
+// }
 
 fn show_songs(list: &[VideoResult]) {
     println!();
@@ -191,8 +254,33 @@ fn show_songs(list: &[VideoResult]) {
 }
 
 /// -------------------------------------------------------------------
-/// MPV IPC & PLAYBACK
+/// MPV IPC & PLAYBACK & QUEUE
 /// -------------------------------------------------------------------
+
+fn queue_add(source: String, name: String) {
+    let mut q = SONG_QUEUE.write().unwrap();
+    println!("Added to queue: {}", name.green());
+    q.push((source, name));
+}
+
+fn queue_next() -> Option<(String, String)> {
+    let mut q = SONG_QUEUE.write().unwrap();
+    if q.is_empty() {
+        None
+    } else {
+        Some(q.remove(0))
+    }
+}
+
+fn queue_show() {
+    let q = SONG_QUEUE.read().unwrap();
+    println!("\n\n{}", "-----QUEUE-----".bright_yellow().bold(),);
+
+    for (i, (_, name)) in q.iter().enumerate() {
+        println!("{}. {}", i + 1, name);
+    }
+}
+
 fn get_ipc_path() -> String {
     "/tmp/ytcli.sock".to_string()
 }
@@ -260,9 +348,10 @@ fn stop_process(proc: &mut Option<Child>) {
     }
 }
 
-fn shuffle_play(dir: &PathBuf) -> Result<Option<(Child, String)>, Box<dyn std::error::Error>> {
+fn shuffle_play(dir: &PathBuf) -> Result<Option<(String, String)>, Box<dyn std::error::Error>> {
     use rand::seq::IndexedRandom;
-    let entries = std::fs::read_dir(dir).ok().unwrap();
+
+    let entries = std::fs::read_dir(dir)?;
     let songs: Vec<_> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
@@ -270,18 +359,20 @@ fn shuffle_play(dir: &PathBuf) -> Result<Option<(Child, String)>, Box<dyn std::e
         .collect();
 
     if songs.is_empty() {
-        println!("No local songs.");
         return Ok(None);
     }
 
     let s = songs.choose(&mut rand::rng()).unwrap();
+
     let name = s
         .file_stem()
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
 
-    Ok(Some((play_file(s.to_str().unwrap())?, name)))
+    let path = s.to_string_lossy().to_string();
+
+    Ok(Some((path, name)))
 }
 
 /// -------------------------------------------------------------------
@@ -308,7 +399,7 @@ async fn fetch_stream_url(
     client: &Client,
     song: &VideoResult,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    println!("Fetching URL...");
+    println!("\nFetching URL...");
     let payload = json!({ "context": { "client": { "clientName": "ANDROID", "clientVersion": "19.09.37" }}, "videoId": song.video_id });
     let res = client
         .post("https://www.youtube.com/youtubei/v1/player")
