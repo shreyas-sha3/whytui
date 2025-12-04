@@ -12,7 +12,7 @@ use std::time::Duration;
 // use tokio::fs::File;
 // use tokio::io::AsyncWriteExt;
 use std::sync::mpsc;
-use yt_search::{SearchFilters, VideoResult, YouTubeSearch}; // Ensure this is imported
+use yt_search::{SearchFilters, VideoResult, YouTubeSearch};
 
 /// -------------------------------------------------------------------
 /// MAIN APPLICATION
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Ok(Some(_)) = child.try_wait() {
                 currently_playing = None;
                 if let Some((src, name)) = queue_next() {
-                    currently_playing = Some(play_file(&src)?);
+                    currently_playing = Some(play_file(&src, &name, &music_dir)?);
                     load_banner(&name);
                 } else {
                     load_banner("Nothing Playing");
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     queue_add(path, name);
                     load_banner("");
                 } else {
-                    currently_playing = Some(play_file(&path)?);
+                    currently_playing = Some(play_file(&path, &name, &music_dir)?);
                     load_banner(&name);
                 }
             } else {
@@ -115,7 +115,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "n" | "next" => {
                 stop_process(&mut currently_playing);
                 if let Some((p, name)) = queue_next() {
-                    currently_playing = Some(play_file(&p)?);
+                    currently_playing = Some(play_file(&p, &name, &music_dir)?);
                     load_banner(&name);
                 } else {
                     load_banner("Nothing Playing");
@@ -168,7 +168,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     queue_add(src, selected.title.clone());
                 } else {
                     stop_process(&mut currently_playing);
-                    currently_playing = Some(play_file(&src)?);
+                    currently_playing = Some(play_file(&src, &selected.title, &music_dir)?);
                     load_banner(&selected.title);
                 }
             } else {
@@ -246,14 +246,6 @@ fn load_banner(song_name: &str) {
     print!("{}", "\n\n> Search / Command: ".bright_blue().bold());
 }
 
-// fn prompt(msg: &str) -> String {
-//     print!("{}", msg);
-//     let _ = std::io::stdout().flush();
-//     let mut s = String::new();
-//     std::io::stdin().read_line(&mut s).unwrap();
-//     s.trim().to_string()
-// }
-
 fn show_songs(list: &[VideoResult]) {
     println!();
     for (i, s) in list.iter().enumerate() {
@@ -262,7 +254,7 @@ fn show_songs(list: &[VideoResult]) {
 }
 
 /// -------------------------------------------------------------------
-/// MPV IPC & PLAYBACK & QUEUE
+/// QUEUE & MPV IPC & PLAYBACK
 /// -------------------------------------------------------------------
 
 fn queue_add(source: String, name: String) {
@@ -332,21 +324,30 @@ fn seek(s: i64) {
     send_ipc(json!({"command": ["seek", s, "relative"]}));
 }
 
-fn play_file(source: &str) -> Result<Child, Box<dyn std::error::Error>> {
+fn play_file(
+    source: &str,
+    title: &str,
+    music_dir: &PathBuf,
+) -> Result<Child, Box<dyn std::error::Error>> {
     let ipc = get_ipc_path();
     #[cfg(unix)]
     let _ = std::fs::remove_file(&ipc);
 
-    let child = Command::new("mpv")
-        .arg("--no-video")
+    let mut cmd = Command::new("mpv");
+    cmd.arg("--no-video")
         .arg("--really-quiet")
         .arg("--force-window=no")
-        .arg(format!("--input-ipc-server={}", ipc))
-        .arg(source)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    Ok(child)
+        .arg(format!("--input-ipc-server={}", ipc));
+
+    //if streaming... record to file simultaneously
+    if source.starts_with("http") {
+        let file_path = music_dir.join(format!("{}.webm", title));
+        cmd.arg(format!("--stream-record={}", file_path.to_string_lossy()));
+    }
+
+    cmd.arg(source).stdout(Stdio::null()).stderr(Stdio::null());
+
+    Ok(cmd.spawn()?)
 }
 
 fn stop_process(proc: &mut Option<Child>) {
@@ -393,7 +394,7 @@ async fn search_songs(
     let yt = YouTubeSearch::new(None, true)?;
     let res = yt
         .search(
-            &format!("{} official audio", q),
+            &format!("{} single songs", q),
             SearchFilters {
                 sort_by: None,
                 duration: None,
@@ -449,7 +450,7 @@ fn build_client() -> Client {
 
 fn prepare_music_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let mut d = dirs::audio_dir().ok_or("No audio dir")?;
-    d.push("ytcli-songs");
+    d.push("whytui");
     std::fs::create_dir_all(&d)?;
     Ok(d)
 }
