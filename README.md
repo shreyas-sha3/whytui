@@ -33,7 +33,6 @@ curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Lates
  
 ## Usage
 
-
 ### At `Search / Command:`
 - Press Enter: Play a random local song / add it to queue  
 - Type a song name: Search for a song.  
@@ -65,6 +64,6 @@ curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Lates
 - [X] progress bar
 - [X] queues
 - [X] cache songs/store to disk from memory
-- [ ] autoplay similar songs
+- [X] autoplay similar songs
 - [ ] reimpliment ytmusic-api for rust
 - [ ] proper tui using ratatui
