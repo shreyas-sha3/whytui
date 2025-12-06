@@ -1,35 +1,34 @@
-use colored::*;
-use reqwest::Client;
-use reqwest::header::{CONNECTION, HeaderMap, HeaderValue, ORIGIN, REFERER, USER_AGENT};
-use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+mod api;
+mod player;
+mod ui;
+
+use std::process::Child;
+use std::sync::{RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
-// use tokio::fs::File;
-// use tokio::io::AsyncWriteExt;
-use std::sync::mpsc;
-use yt_search::{SearchFilters, VideoResult, YouTubeSearch};
 
 /// -------------------------------------------------------------------
 /// MAIN APPLICATION
 /// -------------------------------------------------------------------
-static SONG_MONITOR: RwLock<Option<Arc<AtomicBool>>> = RwLock::new(None);
-static SONG_QUEUE: RwLock<Vec<(String, String)>> = RwLock::new(Vec::new());
+
+// HOLDS (StreamURL, Title, VideoID) VIDEO ID EMPTY FOR LOCAL SONGS
+static SONG_QUEUE: RwLock<Vec<(String, String, String)>> = RwLock::new(Vec::new());
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let music_dir = prepare_music_dir()?;
-    let client = build_client();
-    let mut currently_playing: Option<Child> = None;
-    // Added this variable to track the playing song title for file operations
-    let mut current_song_title = String::new();
+    print!("\x1B[2J\x1B[1;1H\n");
 
-    //transmitter (sends any input for Search/Command)
-    //reciever (running every 250 ms.. checks if song ended plays next in queue if yes)
+    //create music_dir and temp dir to store currently playing song
+    let music_dir = player::prepare_music_dir()?;
+    //Custom unofficial api???
+    let yt_client = api::YTMusic::new();
+
+    let mut currently_playing: Option<Child> = None;
+
+    let mut current_song_title = String::new(); // to know title so fully buffered songs can be moved from temp-> musicdir
+
+    // transmitter (sends any input for Search/Command)
+    // reciever (running every 250 ms.. checks if song ended plays next in queue if yes)
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {
         loop {
@@ -40,14 +39,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    load_banner("Nothing Playing");
-    std::io::stdout().flush()?;
+    refresh_ui(Some("Nothing Playing"));
 
     loop {
-        //firstly checks if song is playing
+        // firstly checks if song is playing
         if let Some(child) = &mut currently_playing {
             if let Ok(Some(_)) = child.try_wait() {
-                //if playback of previous song completed
+                // if playback of previous song completed
                 let temp = music_dir
                     .join("temp")
                     .join(format!("{}.webm", current_song_title));
@@ -59,38 +57,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 currently_playing = None;
 
-                if let Some((src, name)) = queue_next() {
+                // Play Next
+                if let Some((src, name, video_id)) = queue_next() {
                     current_song_title = name.clone();
-                    currently_playing = Some(play_file(&src, &name, &music_dir)?);
-                    load_banner(&name);
-                } else {
-                    current_song_title.clear();
-                    load_banner("Nothing Playing");
+                    currently_playing = Some(player::play_file(&src, &name, &music_dir)?);
+
+                    // FIXED: Auto-repopulate queue when playing from queue
+                    if !video_id.is_empty() {
+                        let yt = yt_client.clone();
+                        let vid = video_id.clone();
+                        tokio::spawn(async move {
+                            queue_auto_add(yt, vid).await;
+                        });
+                    } else {
+                        if let Some((path, name)) = shuffle_play(&music_dir)? {
+                            queue_add(path, name, String::new());
+                            refresh_ui(None);
+                        }
+                    }
+                    refresh_ui(Some(&name));
                 }
-                load_banner("");
-                std::io::stdout().flush()?;
             }
         }
 
-        //check for any input from tx
+        // check for any input from tx
         let input = match rx.try_recv() {
             Ok(s) => s,
-            //if nothing sleep for 250 ms for cpu relief (not the best idea)
             Err(_) => {
+                // if nothing sleep for 250 ms for cpu relief (not the best idea)
                 thread::sleep(Duration::from_millis(250));
                 continue;
             }
         };
-        //if empty query play local (add to queue if something playing)
+
+        // if empty query play local (add to queue if something playing)
         if input.is_empty() {
             if let Some((path, name)) = shuffle_play(&music_dir)? {
                 if currently_playing.is_some() {
-                    queue_add(path, name);
-                    load_banner("");
+                    // Local files don't have a video ID
+                    queue_add(path, name, String::new());
+                    refresh_ui(None);
                 } else {
                     current_song_title = name.clone();
-                    currently_playing = Some(play_file(&path, &name, &music_dir)?);
-                    load_banner(&name);
+                    currently_playing = Some(player::play_file(&path, &name, &music_dir)?);
+                    refresh_ui(Some(&name));
                 }
             } else {
                 println!("No local songs found.");
@@ -101,16 +111,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // special commands
         match input.to_lowercase().as_str() {
             "exit" => {
-                stop_process(&mut currently_playing, &current_song_title, &music_dir);
-                load_banner("");
+                player::stop_process(&mut currently_playing, &current_song_title, &music_dir);
+                refresh_ui(None);
                 break;
             }
             "stop" => {
-                stop_process(&mut currently_playing, &current_song_title, &music_dir);
+                player::stop_process(&mut currently_playing, &current_song_title, &music_dir);
                 current_song_title.clear();
-                load_banner("Nothing Playing");
-                load_banner("");
-                std::io::stdout().flush()?;
+                refresh_ui(Some("Nothing Playing"));
                 continue;
             }
             "c" | "clear" => {
@@ -118,29 +126,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let mut q = SONG_QUEUE.write().unwrap();
                     q.clear();
                 }
-                load_banner("");
+                refresh_ui(None);
                 continue;
             }
             "p" | "pause" => {
                 if currently_playing.is_some() {
-                    toggle_pause();
-                    load_banner("");
-                    std::io::stdout().flush()?;
+                    player::toggle_pause();
                 }
+                refresh_ui(None);
                 continue;
             }
             "n" | "next" => {
-                stop_process(&mut currently_playing, &current_song_title, &music_dir);
-                if let Some((p, name)) = queue_next() {
+                player::stop_process(&mut currently_playing, &current_song_title, &music_dir);
+                if let Some((p, name, video_id)) = queue_next() {
                     current_song_title = name.clone();
-                    currently_playing = Some(play_file(&p, &name, &music_dir)?);
-                    load_banner(&name);
-                } else {
-                    current_song_title.clear();
-                    load_banner("Nothing Playing");
+                    currently_playing = Some(player::play_file(&p, &name, &music_dir)?);
+
+                    // FIXED: Auto-repopulate on manual skip too
+                    if !video_id.is_empty() {
+                        let yt = yt_client.clone();
+                        let vid = video_id.clone();
+                        tokio::spawn(async move {
+                            queue_auto_add(yt, vid).await;
+                        });
+                    } else {
+                        if let Some((path, name)) = shuffle_play(&music_dir)? {
+                            queue_add(path, name, String::new());
+                            refresh_ui(None);
+                        }
+                    }
+                    refresh_ui(Some(&name));
                 }
-                load_banner("");
-                std::io::stdout().flush()?;
                 continue;
             }
             _ => {}
@@ -148,25 +164,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if input.starts_with('>') || input.starts_with('<') {
             if let Ok(s) = input[1..].trim().parse::<i64>() {
-                seek(if input.starts_with('<') { -s } else { s });
+                player::seek(if input.starts_with('<') { -s } else { s });
             }
-            load_banner("");
-            std::io::stdout().flush()?;
+            refresh_ui(None);
             continue;
         }
+        //search using custom api
+        let songs = yt_client.search_songs(&input, 5).await?;
 
-        let songs = search_songs(&client, &input).await?;
         if songs.is_empty() {
             println!("No results.");
-            load_banner("");
-            std::io::stdout().flush()?;
             continue;
         }
 
-        show_songs(&songs);
-        print!("{}", "> Select (1-5): ".bright_white().bold());
-        std::io::stdout().flush()?;
-        //check if q is entered before index
+        ui::show_songs(&songs);
+
+        // check if q is entered before index
         if let Ok(sel) = rx.recv() {
             let (idx, is_queue) = if sel.to_lowercase().starts_with('q') {
                 (sel[1..].parse::<usize>().unwrap_or(0), true)
@@ -177,214 +190,88 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if idx >= 1 && idx <= songs.len() {
                 let selected = &songs[idx - 1];
                 let path = music_dir.join(format!("{}.webm", selected.title));
+
                 let src = if path.exists() {
                     path.to_string_lossy().to_string()
                 } else {
-                    fetch_stream_url(&client, selected).await?
+                    yt_client.fetch_stream_url(&selected.video_id).await?
                 };
 
                 if is_queue {
-                    queue_add(src, selected.title.clone());
+                    queue_add(src, selected.title.clone(), selected.video_id.clone());
+                    refresh_ui(None);
                 } else {
-                    stop_process(&mut currently_playing, &current_song_title, &music_dir);
+                    player::stop_process(&mut currently_playing, &current_song_title, &music_dir);
                     current_song_title = selected.title.clone();
-                    currently_playing = Some(play_file(&src, &selected.title, &music_dir)?);
-                    load_banner(&selected.title);
+                    currently_playing = Some(player::play_file(&src, &selected.title, &music_dir)?);
+
+                    //add similar songs in background
+                    let yt = yt_client.clone();
+                    let vid = selected.video_id.clone();
+                    SONG_QUEUE.write().unwrap().clear();
+                    tokio::spawn(async move {
+                        queue_auto_add(yt, vid).await;
+                    });
+
+                    refresh_ui(Some(&selected.title));
                 }
             } else {
-                println!("Invalid index.");
+                refresh_ui(None);
             }
         }
-        load_banner("");
-        std::io::stdout().flush()?;
     }
     Ok(())
-}
-
-fn stop_process(proc: &mut Option<Child>, song_name: &str, music_dir: &PathBuf) {
-    if let Some(mut child) = proc.take() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    // Delete partial download
-    if !song_name.is_empty() {
-        let temp = music_dir.join("temp").join(format!("{}.webm", song_name));
-        if temp.exists() {
-            std::fs::remove_file(temp).ok();
-        }
-    }
-}
-
-fn play_file(
-    source: &str,
-    title: &str,
-    music_dir: &PathBuf,
-) -> Result<Child, Box<dyn std::error::Error>> {
-    let ipc = get_ipc_path();
-    #[cfg(unix)]
-    let _ = std::fs::remove_file(&ipc);
-
-    let mut cmd = Command::new("mpv");
-    cmd.arg("--no-video")
-        .arg("--really-quiet")
-        .arg("--force-window=no")
-        .arg(format!("--input-ipc-server={}", ipc));
-
-    //if streaming... record to file simultaneously
-    if source.starts_with("http") {
-        let temp_path = music_dir.join("temp").join(format!("{}.webm", title));
-        cmd.arg(format!("--stream-record={}", temp_path.to_string_lossy()));
-    }
-
-    cmd.arg(source).stdout(Stdio::null()).stderr(Stdio::null());
-
-    Ok(cmd.spawn()?)
-}
-
-fn start_monitor_thread(name: String) -> Arc<AtomicBool> {
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_clone = stop.clone();
-
-    thread::spawn(move || {
-        let mut stdout = std::io::stdout();
-        while !stop_clone.load(Ordering::Relaxed) {
-            // get time info fom ipc
-            let (curr, tot) = get_time_info().unwrap_or((0.0, 0.0));
-            let fmt = |s: f64| format!("{:02}:{:02}", (s / 60.0) as u64, (s % 60.0) as u64);
-
-            //ANSI bs
-            print!(
-                "\x1B7\x1B[14;0H\x1B[2K{} [{} / {}] {}\x1B8",
-                "▶︎".bright_green(),
-                fmt(curr),
-                fmt(tot),
-                name.white().bold()
-            );
-            let _ = stdout.flush();
-            thread::sleep(Duration::from_millis(1000));
-        }
-    });
-    stop
-}
-
-fn load_banner(song_name: &str) {
-    print!("\x1B[2J\x1B[1;1H\n");
-    std::io::stdout().flush().unwrap();
-
-    println!(
-        "{}",
-        r#"
-    ==========================================================
-    ██╗    ██╗ ██╗  ██╗ ██╗    ██╗    ████████╗ ██╗   ██╗ ██╗
-    ██║    ██║ ██║  ██║ ╚██╗ ██╔╝     ╚══██╔══╝ ██║   ██║ ██║
-    ██║ █╗ ██║ ███████║  ╚████╔╝ █████╗  ██║    ██║   ██║ ██║
-    ██║███╗██║ ██╔══██║   ╚██╔╝  ╚════╝  ██║    ██║   ██║ ██║
-    ╚███╔███╔╝ ██║  ██║    ██║           ██║    ╚██████╔╝ ██║
-     ╚══╝╚══╝  ╚═╝  ╚═╝    ╚═╝           ╚═╝     ╚═════╝  ╚═╝
-    𝕓𝕪:𝕤𝕙𝕒𝟛
-    ==========================================================
-    "#
-        .truecolor(255, 126, 131)
-    );
-    println!("\n");
-    //print queue along with banner
-    queue_show();
-    if !song_name.is_empty() {
-        // SONG MONITORING MANAGEMENT
-        {
-            let mut monitor_guard = SONG_MONITOR.write().unwrap();
-
-            if let Some(stop_signal) = monitor_guard.take() {
-                stop_signal.store(true, Ordering::Relaxed);
-            }
-            let new_stop = start_monitor_thread(song_name.to_string());
-            *monitor_guard = Some(new_stop);
-        }
-    }
-    print!("{}", "\n\n> Search / Command: ".bright_blue().bold());
-}
-
-fn show_songs(list: &[VideoResult]) {
-    println!();
-    for (i, s) in list.iter().enumerate() {
-        println!("{}: {} ({})", i + 1, s.title, s.duration);
-    }
 }
 
 /// -------------------------------------------------------------------
 /// QUEUE & MPV IPC & PLAYBACK
 /// -------------------------------------------------------------------
 
-fn queue_add(source: String, name: String) {
-    let mut q = SONG_QUEUE.write().unwrap();
-    println!("Added to queue: {}", name.green());
-    q.push((source, name));
-}
-
-fn queue_next() -> Option<(String, String)> {
-    let mut q = SONG_QUEUE.write().unwrap();
-    if q.is_empty() {
-        None
-    } else {
-        Some(q.remove(0))
-    }
-}
-
-fn queue_show() {
+fn refresh_ui(song_name: Option<&str>) {
     let q = SONG_QUEUE.read().unwrap();
-    println!("\n\n{}", "-----QUEUE-----".bright_yellow().bold(),);
-
-    for (i, (_, name)) in q.iter().enumerate() {
-        println!("{}. {}", i + 1, name);
-    }
+    let queue_titles: Vec<String> = q.iter().map(|(_, t, _)| t.clone()).collect();
+    ui::load_banner(song_name, &queue_titles);
 }
 
-fn get_ipc_path() -> String {
-    "/tmp/ytcli.sock".to_string()
-}
+// accept client for async spawning and checks queue length
+pub async fn queue_auto_add(yt: api::YTMusic, id: String) {
+    // Check if we actually need to add songs (queue < 2 items)
+    let should_fetch = {
+        let q = SONG_QUEUE.read().unwrap();
+        q.len() < 2
+    };
 
-fn send_ipc(cmd: serde_json::Value) -> Option<String> {
-    let path = get_ipc_path();
-    let msg = format!("{}\n", cmd.to_string());
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::net::UnixStream;
-        if let Ok(mut stream) = UnixStream::connect(&path) {
-            let _ = stream.write_all(msg.as_bytes());
-            let _ = stream.flush();
-            let mut reader = BufReader::new(&stream);
-            let mut resp = String::new();
-            stream
-                .set_read_timeout(Some(Duration::from_millis(200)))
-                .ok();
-            if reader.read_line(&mut resp).is_ok() {
-                return Some(resp);
+    if should_fetch {
+        if let Ok(related) = yt.fetch_related_songs(&id, 5).await {
+            for s in related {
+                if let Ok(url) = yt.fetch_stream_url(&s.video_id).await {
+                    // Add to queue with video_id so its continuous
+                    queue_add(url, s.title.clone(), s.video_id);
+                }
             }
+            refresh_ui(None);
         }
     }
-    None
 }
 
-fn get_time_info() -> Option<(f64, f64)> {
-    let get = |p| {
-        send_ipc(json!({"command": ["get_property", p]}))
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v["data"].as_f64())
-    };
-    Some((get("time-pos")?, get("duration")?))
+fn queue_add(src: String, name: String, video_id: String) {
+    let mut q = SONG_QUEUE.write().unwrap();
+    q.push((src, name, video_id));
 }
 
-fn toggle_pause() {
-    send_ipc(json!({"command": ["cycle", "pause"]}));
-}
-fn seek(s: i64) {
-    send_ipc(json!({"command": ["seek", s, "relative"]}));
+fn queue_next() -> Option<(String, String, String)> {
+    let mut q = SONG_QUEUE.write().unwrap();
+    if !q.is_empty() {
+        Some(q.remove(0))
+    } else {
+        None
+    }
 }
 
-fn shuffle_play(dir: &PathBuf) -> Result<Option<(String, String)>, Box<dyn std::error::Error>> {
+fn shuffle_play(
+    dir: &std::path::PathBuf,
+) -> Result<Option<(String, String)>, Box<dyn std::error::Error>> {
     use rand::seq::IndexedRandom;
-
     let entries = std::fs::read_dir(dir)?;
     let songs: Vec<_> = entries
         .filter_map(|e| e.ok())
@@ -395,84 +282,11 @@ fn shuffle_play(dir: &PathBuf) -> Result<Option<(String, String)>, Box<dyn std::
     if songs.is_empty() {
         return Ok(None);
     }
-
     let s = songs.choose(&mut rand::rng()).unwrap();
-
     let name = s
         .file_stem()
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-
-    let path = s.to_string_lossy().to_string();
-
-    Ok(Some((path, name)))
-}
-
-async fn search_songs(
-    _client: &Client,
-    q: &str,
-) -> Result<Vec<VideoResult>, Box<dyn std::error::Error>> {
-    let yt = YouTubeSearch::new(None, true)?;
-    let res = yt
-        .search(
-            &format!("{} official music", q),
-            SearchFilters {
-                sort_by: None,
-                duration: None,
-            },
-        )
-        .await?;
-    Ok(res.into_iter().take(5).collect())
-}
-
-async fn fetch_stream_url(
-    client: &Client,
-    song: &VideoResult,
-) -> Result<String, Box<dyn std::error::Error>> {
-    println!("\nFetching URL...");
-    let payload = json!({ "context": { "client": { "clientName": "ANDROID", "clientVersion": "19.09.37" }}, "videoId": song.video_id });
-    let res = client
-        .post("https://www.youtube.com/youtubei/v1/player")
-        .json(&payload)
-        .send()
-        .await?;
-    let data: serde_json::Value = res.json().await?;
-
-    let formats = data["streamingData"]["adaptiveFormats"]
-        .as_array()
-        .ok_or("No formats")?;
-    let best = formats
-        .iter()
-        .filter(|f| {
-            f["mimeType"]
-                .as_str()
-                .unwrap_or("")
-                .starts_with("audio/webm")
-        })
-        .max_by_key(|f| f["bitrate"].as_i64().unwrap_or(0))
-        .and_then(|f| f["url"].as_str())
-        .ok_or("No URL")?;
-
-    Ok(best.to_string())
-}
-
-fn build_client() -> Client {
-    let mut h = HeaderMap::new();
-    h.insert(USER_AGENT, HeaderValue::from_static("Mozilla/5.0"));
-    h.insert(
-        REFERER,
-        HeaderValue::from_static("https://www.youtube.com/"),
-    );
-    h.insert(ORIGIN, HeaderValue::from_static("https://www.youtube.com"));
-    h.insert(CONNECTION, HeaderValue::from_static("keep-alive"));
-    Client::builder().default_headers(h).build().unwrap()
-}
-
-fn prepare_music_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let mut d = dirs::audio_dir().ok_or("No audio dir")?;
-    d.push("whytui");
-    std::fs::create_dir_all(&d)?;
-    std::fs::create_dir_all(d.join("temp"))?;
-    Ok(d)
+    Ok(Some((s.to_string_lossy().to_string(), name)))
 }

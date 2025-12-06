@@ -9,10 +9,11 @@ Search, download, and play songs directly from the terminal.
 
 ## Features
 
-- Search for songs using YouTube
-- Play songs using `ffplay`
-- Downloads songs automatically to `~/Music/ytcli-songs`
-- Stop or switch songs anytime
+- Search for songs using YouTubeMusic
+- Play songs using `mpv`
+- Caches songs automatically to `~/Music/whytui`
+- Auto adds related songs to queue
+- Can play directly from Cache
 - Minimal dependencies and fast startup
 
 ## Installation
