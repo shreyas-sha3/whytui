@@ -52,6 +52,8 @@ curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Lates
   * `stop`  → stop current song
   * `exit`  → quit the application
 
+#### Note: Run with `--no-autoplay` to disable autoplay
+
 ## Requirements
 
 * Rust 

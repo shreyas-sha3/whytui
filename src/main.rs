@@ -16,6 +16,10 @@ static SONG_QUEUE: RwLock<Vec<(String, String, String)>> = RwLock::new(Vec::new(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    //collect arguements
+    let args: Vec<String> = std::env::args().collect();
+    let no_autoplay = args.contains(&"--no-autoplay".to_string());
+
     print!("\x1B[2J\x1B[1;1H\n");
 
     //create music_dir and temp dir to store currently playing song
@@ -61,18 +65,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some((src, name, video_id)) = queue_next() {
                     current_song_title = name.clone();
                     currently_playing = Some(player::play_file(&src, &name, &music_dir)?);
-
-                    // FIXED: Auto-repopulate queue when playing from queue
-                    if !video_id.is_empty() {
-                        let yt = yt_client.clone();
-                        let vid = video_id.clone();
-                        tokio::spawn(async move {
-                            queue_auto_add(yt, vid).await;
-                        });
-                    } else {
-                        if let Some((path, name)) = shuffle_play(&music_dir)? {
-                            queue_add(path, name, String::new());
-                            refresh_ui(None);
+                    //defauly mode
+                    if !no_autoplay {
+                        if !video_id.is_empty() {
+                            let yt = yt_client.clone();
+                            let vid = video_id.clone();
+                            tokio::spawn(async move {
+                                queue_auto_add(yt, vid).await;
+                            });
+                        } else {
+                            if let Some((path, name)) = shuffle_play(&music_dir)? {
+                                queue_add(path, name, String::new());
+                                refresh_ui(None);
+                            }
                         }
                     }
                     refresh_ui(Some(&name));
@@ -142,17 +147,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     current_song_title = name.clone();
                     currently_playing = Some(player::play_file(&p, &name, &music_dir)?);
 
-                    // FIXED: Auto-repopulate on manual skip too
-                    if !video_id.is_empty() {
-                        let yt = yt_client.clone();
-                        let vid = video_id.clone();
-                        tokio::spawn(async move {
-                            queue_auto_add(yt, vid).await;
-                        });
-                    } else {
-                        if let Some((path, name)) = shuffle_play(&music_dir)? {
-                            queue_add(path, name, String::new());
-                            refresh_ui(None);
+                    if !no_autoplay {
+                        if !video_id.is_empty() {
+                            let yt = yt_client.clone();
+                            let vid = video_id.clone();
+                            tokio::spawn(async move {
+                                queue_auto_add(yt, vid).await;
+                            });
+                        } else {
+                            if let Some((path, name)) = shuffle_play(&music_dir)? {
+                                queue_add(path, name, String::new());
+                                refresh_ui(None);
+                            }
                         }
                     }
                     refresh_ui(Some(&name));
@@ -205,14 +211,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     current_song_title = selected.title.clone();
                     currently_playing = Some(player::play_file(&src, &selected.title, &music_dir)?);
 
-                    //add similar songs in background
-                    let yt = yt_client.clone();
-                    let vid = selected.video_id.clone();
-                    SONG_QUEUE.write().unwrap().clear();
-                    tokio::spawn(async move {
-                        queue_auto_add(yt, vid).await;
-                    });
-
+                    if !no_autoplay {
+                        //add similar songs in background
+                        let yt = yt_client.clone();
+                        let vid = selected.video_id.clone();
+                        SONG_QUEUE.write().unwrap().clear();
+                        tokio::spawn(async move {
+                            queue_auto_add(yt, vid).await;
+                        });
+                    }
                     refresh_ui(Some(&selected.title));
                 }
             } else {
