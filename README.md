@@ -4,7 +4,7 @@ A terminal-based YouTube music player written in Rust.
 Search, download, and play songs directly from the terminal.
 
 
-<img width="497" height="406" alt="image" src="https://github.com/user-attachments/assets/f732ab9b-1e44-4e73-ae32-718ed0f46015" />
+<img width="438" height="412" alt="image" src="https://github.com/user-attachments/assets/a3b89f68-eeca-4728-998c-7271608bf2c7" />
 
 
 ## Features
