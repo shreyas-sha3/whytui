@@ -6,7 +6,6 @@ use std::process::Child;
 use std::sync::{RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
-
 /// -------------------------------------------------------------------
 /// MAIN APPLICATION
 /// -------------------------------------------------------------------
@@ -182,6 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if songs.is_empty() {
             println!("No results.");
+            refresh_ui(None);
             continue;
         }
 
@@ -218,6 +218,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let yt = yt_client.clone();
                         let vid = selected.video_id.clone();
                         SONG_QUEUE.write().unwrap().clear();
+                        RELATED_SONG_LIST.write().unwrap().clear();
                         tokio::spawn(async move {
                             queue_auto_add(yt, vid).await;
                         });
@@ -255,12 +256,9 @@ pub async fn queue_auto_add(yt: api::YTMusic, id: String) {
             let c = RELATED_SONG_LIST.read().unwrap();
             c.is_empty()
         };
-
-        // 3. Fetch Batch (NO LOCKS HELD during await)
         if cache_empty {
-            // Fetch 50 songs
             if let Ok(related) = yt.fetch_related_songs(&id, 50).await {
-                println!("\nAutomix Exhausted, Refilling...");
+                println!("\n\nLooking for similar songs...");
                 let mut c = RELATED_SONG_LIST.write().unwrap();
                 for song in related {
                     c.push((song.title, song.video_id));

@@ -3,47 +3,8 @@ use reqwest::{
     header::{HeaderMap, HeaderValue},
 };
 use serde_json::{Value, json};
-use std::fmt;
-
-// --- ERROR HANDLING ---
-
-#[derive(Debug)]
-pub enum YTMusicError {
-    Network(reqwest::Error),
-    Json(serde_json::Error),
-    Io(std::io::Error),
-    Custom(String),
-}
-
-impl fmt::Display for YTMusicError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            YTMusicError::Network(e) => write!(f, "Network Error: {}", e),
-            YTMusicError::Json(e) => write!(f, "JSON Error: {}", e),
-            YTMusicError::Io(e) => write!(f, "IO Error: {}", e),
-            YTMusicError::Custom(e) => write!(f, "API Error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for YTMusicError {}
-
-impl From<reqwest::Error> for YTMusicError {
-    fn from(err: reqwest::Error) -> Self {
-        YTMusicError::Network(err)
-    }
-}
-impl From<serde_json::Error> for YTMusicError {
-    fn from(err: serde_json::Error) -> Self {
-        YTMusicError::Json(err)
-    }
-}
-impl From<std::io::Error> for YTMusicError {
-    fn from(err: std::io::Error) -> Self {
-        YTMusicError::Io(err)
-    }
-}
-
+use std::error::Error;
+use std::time::Duration;
 //add ability to clone for tokiko later
 #[derive(Debug, Clone)]
 pub struct SongDetails {
@@ -84,21 +45,24 @@ impl YTMusic {
         }
     }
 
-    async fn post(&self, endpoint: &str, body: &Value) -> Result<Value, reqwest::Error> {
-        self.client
+    async fn post(&self, endpoint: &str, body: &Value) -> Result<Value, Box<dyn Error>> {
+        let res = self
+            .client
             .post(endpoint)
             .json(body)
             .send()
             .await?
             .json()
-            .await
+            .await?;
+
+        Ok(res)
     }
 
     pub async fn search_songs(
         &self,
         query: &str,
         limit: usize,
-    ) -> Result<Vec<SongDetails>, YTMusicError> {
+    ) -> Result<Vec<SongDetails>, Box<dyn Error>> {
         let url = "https://music.youtube.com/youtubei/v1/search?key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30";
         let body = json!({
             "context": { "client": { "clientName": "WEB_REMIX", "clientVersion": "1.20231206.01.00", "hl": "en", "gl": "US" } },
@@ -136,7 +100,7 @@ impl YTMusic {
         &self,
         video_id: &str,
         limit: usize,
-    ) -> Result<Vec<SongDetails>, YTMusicError> {
+    ) -> Result<Vec<SongDetails>, Box<dyn Error>> {
         let url = "https://music.youtube.com/youtubei/v1/next?key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30";
         let playlist_id = format!("RDAMVM{}", video_id);
 
@@ -166,12 +130,10 @@ impl YTMusic {
             }
         }
 
-        if related.is_empty() {}
-
         Ok(related)
     }
 
-    pub async fn fetch_stream_url(&self, video_id: &str) -> Result<String, YTMusicError> {
+    pub async fn fetch_stream_url(&self, video_id: &str) -> Result<String, Box<dyn Error>> {
         println!("Fetching URL...");
 
         let payload = json!({
@@ -193,7 +155,7 @@ impl YTMusic {
 
         let formats = data["streamingData"]["adaptiveFormats"]
             .as_array()
-            .ok_or_else(|| YTMusicError::Custom("No formats found".to_string()))?;
+            .ok_or("No formats found")?;
 
         let best = formats
             .iter()
@@ -205,10 +167,138 @@ impl YTMusic {
             })
             .max_by_key(|f| f["bitrate"].as_i64().unwrap_or(0))
             .and_then(|f| f["url"].as_str())
-            .ok_or_else(|| YTMusicError::Custom("No suitable URL found".to_string()))?;
+            .ok_or("No suitable URL found")?;
 
         Ok(best.to_string())
     }
+}
+// --- NEW: Simple lyrics fetcher (lrclib.net) ---
+pub fn split_title_artist(input: &str) -> (String, String) {
+    if let (Some(start), Some(end)) = (input.rfind('['), input.rfind(']')) {
+        if end > start {
+            let title = input[..start].trim().to_string();
+            let artist = input[start + 1..end].trim().to_string();
+            return (title, artist);
+        }
+    }
+    // fallback if no [artist] part
+    (input.trim().to_string(), String::new())
+}
+
+pub async fn _fetch_lyrics(title_artist: &str) -> Result<String, Box<dyn Error>> {
+    let (title, artist) = split_title_artist(title_artist);
+
+    let client = Client::new(); // independent function → must create our own client
+
+    let url = format!(
+        "https://lrclib.net/api/get?track_name={}&artist_name={}",
+        urlencoding::encode(&title),
+        urlencoding::encode(&artist),
+    );
+
+    let resp = client.get(&url).send().await?;
+
+    if !resp.status().is_success() {
+        return Err("No lyrics found".into());
+    }
+
+    let json: Value = resp.json().await?;
+    let lyrics = json["plainLyrics"].as_str().unwrap_or("").to_string();
+
+    Ok(lyrics)
+}
+
+#[derive(Debug, Clone)]
+pub struct LrcLine {
+    pub timestamp: Duration,
+    pub text: String,
+}
+
+pub async fn fetch_synced_lyrics(title_artist: &str) -> Result<Vec<LrcLine>, Box<dyn Error>> {
+    let (title, artist) = split_title_artist(title_artist);
+    let client = reqwest::Client::new();
+
+    // checking search endpoint first
+    let search_url = format!(
+        "https://lrclib.net/api/search?track_name={}&artist_name={}",
+        urlencoding::encode(&title),
+        urlencoding::encode(&artist)
+    );
+
+    let search_resp = client.get(&search_url).send().await?;
+
+    if search_resp.status().is_success() {
+        let json: Value = search_resp.json().await?;
+
+        if let Some(arr) = json.as_array() {
+            for entry in arr {
+                if let Some(sync) = entry["syncedLyrics"].as_str() {
+                    if !sync.trim().is_empty() {
+                        return Ok(parse_lrc(sync));
+                    }
+                }
+            }
+        }
+    }
+
+    // fallback to get endpoint
+    let get_url = format!(
+        "https://lrclib.net/api/get?track_name={}&artist_name={}",
+        urlencoding::encode(&title),
+        urlencoding::encode(&artist)
+    );
+
+    let get_resp = client.get(&get_url).send().await?;
+
+    if !get_resp.status().is_success() {
+        return Err("Lyrics not found".into());
+    }
+
+    let json: Value = get_resp.json().await?;
+
+    if let Some(sync) = json["syncedLyrics"].as_str() {
+        if !sync.trim().is_empty() {
+            return Ok(parse_lrc(sync));
+        }
+    }
+
+    Err("No synced lyrics available".into())
+}
+
+pub fn parse_lrc(lrc: &str) -> Vec<LrcLine> {
+    let mut lines = Vec::new();
+
+    for line in lrc.lines() {
+        if let Some(start) = line.find('[') {
+            if let Some(end) = line.find(']') {
+                let ts = &line[start + 1..end];
+                let text = line[end + 1..].trim().to_string();
+
+                if let Some(dur) = parse_timestamp(ts) {
+                    lines.push(LrcLine {
+                        timestamp: dur,
+                        text,
+                    });
+                }
+            }
+        }
+    }
+
+    lines.sort_by_key(|l| l.timestamp);
+    lines
+}
+
+fn parse_timestamp(ts: &str) -> Option<Duration> {
+    let parts: Vec<&str> = ts.split(':').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let minutes: u64 = parts[0].parse().ok()?;
+    let seconds: f64 = parts[1].parse().ok()?;
+    let total_ms = ((minutes as f64) * 60.0 + seconds) * 1000.0;
+
+    Some(Duration::from_millis(total_ms as u64))
 }
 
 fn parse_queue_item(item: &Value) -> Option<SongDetails> {

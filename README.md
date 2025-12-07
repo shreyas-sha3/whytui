@@ -67,5 +67,6 @@ curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Lates
 - [X] queues
 - [X] cache songs/store to disk from memory
 - [X] autoplay similar songs
-- [ ] reimpliment ytmusic-api for rust
+- [X] lyrics
+- [ ] reimpliment a fully featured ytmusic api
 - [ ] proper tui using ratatui
