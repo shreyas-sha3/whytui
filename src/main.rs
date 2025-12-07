@@ -13,6 +13,8 @@ use std::time::Duration;
 
 // HOLDS (StreamURL, Title, VideoID) VIDEO ID EMPTY FOR LOCAL SONGS
 static SONG_QUEUE: RwLock<Vec<(String, String, String)>> = RwLock::new(Vec::new());
+// HOLDS just VIDEO ID of realted songs upto 50 songs  SONG_QUEUE is populated by fetching urls from this list
+static RELATED_SONG_LIST: RwLock<Vec<(String, String)>> = RwLock::new(Vec::new());
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -240,24 +242,52 @@ fn refresh_ui(song_name: Option<&str>) {
     ui::load_banner(song_name, &queue_titles);
 }
 
-// accept client for async spawning and checks queue length
 pub async fn queue_auto_add(yt: api::YTMusic, id: String) {
-    // Check if we actually need to add songs (queue < 2 items)
-    let should_fetch = {
+    //check if queue is almost over
+    let needs_songs = {
         let q = SONG_QUEUE.read().unwrap();
         q.len() < 2
     };
 
-    if should_fetch {
-        if let Ok(related) = yt.fetch_related_songs(&id, 5).await {
-            for s in related {
-                if let Ok(url) = yt.fetch_stream_url(&s.video_id).await {
-                    // Add to queue with video_id so its continuous
-                    queue_add(url, s.title.clone(), s.video_id);
+    if needs_songs {
+        // check if saved related videoIDs are exhausted
+        let cache_empty = {
+            let c = RELATED_SONG_LIST.read().unwrap();
+            c.is_empty()
+        };
+
+        // 3. Fetch Batch (NO LOCKS HELD during await)
+        if cache_empty {
+            // Fetch 50 songs
+            if let Ok(related) = yt.fetch_related_songs(&id, 50).await {
+                println!("\nAutomix Exhausted, Refilling...");
+                let mut c = RELATED_SONG_LIST.write().unwrap();
+                for song in related {
+                    c.push((song.title, song.video_id));
                 }
             }
-            refresh_ui(None);
         }
+
+        //cannot hold lock during await :(  So extra vec
+        let mut to_fetch = Vec::new();
+        {
+            let mut c = RELATED_SONG_LIST.write().unwrap();
+            for _ in 0..5 {
+                if let Some(item) = c.pop() {
+                    to_fetch.push(item);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Resolve stream URLs and add to queue
+        for (title, video_id) in to_fetch {
+            if let Ok(url) = yt.fetch_stream_url(&video_id).await {
+                queue_add(url, title, video_id);
+            }
+        }
+        refresh_ui(None);
     }
 }
 

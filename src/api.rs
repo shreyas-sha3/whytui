@@ -171,9 +171,8 @@ impl YTMusic {
         Ok(related)
     }
 
-    // UPDATED: Now returns Result<..., YTMusicError>
     pub async fn fetch_stream_url(&self, video_id: &str) -> Result<String, YTMusicError> {
-        println!("\nFetching URL...");
+        println!("Fetching URL...");
 
         let payload = json!({
             "context": {
