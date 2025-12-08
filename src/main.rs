@@ -1,39 +1,69 @@
 mod api;
+mod offline;
 mod player;
 mod ui;
 
+use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::process::Child;
 use std::sync::{RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
+
 /// -------------------------------------------------------------------
-/// MAIN APPLICATION
+/// DATA STRUCTURES
 /// -------------------------------------------------------------------
 
-// HOLDS (StreamURL, Title, VideoID) VIDEO ID EMPTY FOR LOCAL SONGS
-static SONG_QUEUE: RwLock<Vec<(String, String, String)>> = RwLock::new(Vec::new());
-// HOLDS just VIDEO ID of realted songs upto 50 songs  SONG_QUEUE is populated by fetching urls from this list
+#[derive(Clone, Debug, PartialEq)]
+pub struct Track {
+    pub title: String,
+    pub url: String,
+    pub video_id: Option<String>,
+}
+
+impl Track {
+    pub fn new(title: String, url: String, video_id: Option<String>) -> Self {
+        Self {
+            title,
+            url,
+            video_id,
+        }
+    }
+}
+
+/// -------------------------------------------------------------------
+/// GLOBAL STATE
+/// -------------------------------------------------------------------
+
+static SONG_QUEUE: RwLock<Vec<Track>> = RwLock::new(Vec::new());
+// HOLDS just VIDEO ID of related songs upto 50 songs. SONG_QUEUE is populated by fetching urls from this list
 static RELATED_SONG_LIST: RwLock<Vec<(String, String)>> = RwLock::new(Vec::new());
+static RECENTLY_PLAYED: RwLock<VecDeque<Track>> = RwLock::new(VecDeque::new());
+const HISTORY_LIMIT: usize = 50;
+
+static VIEW_MODE: RwLock<String> = RwLock::new(String::new());
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    //collect arguements
+    //collect arguments
     let args: Vec<String> = std::env::args().collect();
+    let offline_mode = args.contains(&"--offline-playback".to_string());
     let no_autoplay = args.contains(&"--no-autoplay".to_string());
+
+    *VIEW_MODE.write().unwrap() = "queue".to_string();
 
     print!("\x1B[2J\x1B[1;1H\n");
 
     //create music_dir and temp dir to store currently playing song
     let music_dir = player::prepare_music_dir()?;
-    //Custom unofficial api???
+    //Custom unofficial api
     let yt_client = api::YTMusic::new();
 
     let mut currently_playing: Option<Child> = None;
-
-    let mut current_song_title = String::new(); // to know title so fully buffered songs can be moved from temp-> musicdir
+    let mut current_track: Option<Track> = None;
 
     // transmitter (sends any input for Search/Command)
-    // reciever (running every 250 ms.. checks if song ended plays next in queue if yes)
+    // receiver (running every 250 ms.. checks if song ended plays next in queue if yes)
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {
         loop {
@@ -44,44 +74,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    refresh_ui(Some("Nothing Playing"));
+    // STARTUP LOGIC
+    if offline_mode {
+        let exclude = get_excluded_titles();
+        {
+            let mut q = SONG_QUEUE.write().unwrap();
+            offline::populate_queue_offline(&music_dir, &mut q, &exclude);
+        }
+
+        if let Some(track) = queue_next() {
+            current_track = Some(track.clone());
+            currently_playing = Some(player::play_file(&track.url, &track.title, &music_dir)?);
+
+            let exclude = get_excluded_titles();
+            {
+                let mut q = SONG_QUEUE.write().unwrap();
+                offline::populate_queue_offline(&music_dir, &mut q, &exclude);
+            }
+            refresh_ui(Some(&track.title));
+        } else {
+            println!("No local songs found in {:?}", music_dir);
+            refresh_ui(Some("Nothing Playing"));
+        }
+    } else {
+        refresh_ui(Some("Nothing Playing"));
+    }
 
     loop {
         // firstly checks if song is playing
         if let Some(child) = &mut currently_playing {
             if let Ok(Some(_)) = child.try_wait() {
                 // if playback of previous song completed
-                let temp = music_dir
-                    .join("temp")
-                    .join(format!("{}.webm", current_song_title));
-                let full = music_dir.join(format!("{}.webm", current_song_title));
+                if let Some(track) = &current_track {
+                    let temp = music_dir.join("temp").join(format!("{}.webm", track.title));
+                    let full = music_dir.join(format!("{}.webm", track.title));
 
-                // Rename only if the temp(previously played song fully buffered) exists
-                if temp.exists() {
-                    std::fs::rename(&temp, &full).ok();
+                    // Rename only if the temp(previously played song fully buffered) exists
+                    if temp.exists() {
+                        std::fs::rename(&temp, &full).ok();
+                    }
+
+                    add_to_history(track.clone());
                 }
+
                 currently_playing = None;
 
                 // Play Next
-                if let Some((src, name, video_id)) = queue_next() {
-                    current_song_title = name.clone();
-                    currently_playing = Some(player::play_file(&src, &name, &music_dir)?);
-                    //defauly mode
+                if let Some(track) = queue_next() {
+                    current_track = Some(track.clone());
+                    currently_playing =
+                        Some(player::play_file(&track.url, &track.title, &music_dir)?);
+
+                    //default mode
                     if !no_autoplay {
-                        if !video_id.is_empty() {
-                            let yt = yt_client.clone();
-                            let vid = video_id.clone();
-                            tokio::spawn(async move {
-                                queue_auto_add(yt, vid).await;
-                            });
-                        } else {
-                            if let Some((path, name)) = shuffle_play(&music_dir)? {
-                                queue_add(path, name, String::new());
-                                refresh_ui(None);
+                        if offline_mode {
+                            let exclude = get_excluded_titles();
+                            {
+                                let mut q = SONG_QUEUE.write().unwrap();
+                                offline::populate_queue_offline(&music_dir, &mut q, &exclude);
                             }
+                        } else if let Some(vid) = &track.video_id {
+                            let yt = yt_client.clone();
+                            let v = vid.clone();
+                            tokio::spawn(async move {
+                                queue_auto_add_online(yt, v).await;
+                            });
                         }
                     }
-                    refresh_ui(Some(&name));
+                    refresh_ui(Some(&track.title));
+                } else {
+                    current_track = None;
+                    refresh_ui(Some("Nothing Playing"));
                 }
             }
         }
@@ -96,73 +159,99 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        // if empty query play local (add to queue if something playing)
         if input.is_empty() {
-            if let Some((path, name)) = shuffle_play(&music_dir)? {
-                if currently_playing.is_some() {
-                    // Local files don't have a video ID
-                    queue_add(path, name, String::new());
-                    refresh_ui(None);
-                } else {
-                    current_song_title = name.clone();
-                    currently_playing = Some(player::play_file(&path, &name, &music_dir)?);
-                    refresh_ui(Some(&name));
-                }
-            } else {
-                println!("No local songs found.");
+            if currently_playing.is_some() {
+                player::toggle_pause();
             }
+            refresh_ui(None);
             continue;
         }
 
         // special commands
         match input.to_lowercase().as_str() {
             "exit" => {
-                player::stop_process(&mut currently_playing, &current_song_title, &music_dir);
+                if let Some(track) = &current_track {
+                    add_to_history(track.clone());
+                    player::stop_process(&mut currently_playing, &track.title, &music_dir);
+                }
                 refresh_ui(None);
                 break;
             }
             "stop" => {
-                player::stop_process(&mut currently_playing, &current_song_title, &music_dir);
-                current_song_title.clear();
+                if let Some(track) = &current_track {
+                    add_to_history(track.clone());
+                    player::stop_process(&mut currently_playing, &track.title, &music_dir);
+                }
+                current_track = None;
                 refresh_ui(Some("Nothing Playing"));
                 continue;
             }
             "c" | "clear" => {
-                {
-                    let mut q = SONG_QUEUE.write().unwrap();
-                    q.clear();
-                }
+                SONG_QUEUE.write().unwrap().clear();
                 refresh_ui(None);
                 continue;
             }
-            "p" | "pause" => {
-                if currently_playing.is_some() {
-                    player::toggle_pause();
+            "t" | "toggle" => {
+                {
+                    let mut mode = VIEW_MODE.write().unwrap();
+                    *mode = if *mode == "queue" {
+                        "recent".to_string()
+                    } else {
+                        "queue".to_string()
+                    };
                 }
                 refresh_ui(None);
                 continue;
             }
             "n" | "next" => {
-                player::stop_process(&mut currently_playing, &current_song_title, &music_dir);
-                if let Some((p, name, video_id)) = queue_next() {
-                    current_song_title = name.clone();
-                    currently_playing = Some(player::play_file(&p, &name, &music_dir)?);
+                if let Some(track) = &current_track {
+                    add_to_history(track.clone());
+                    player::stop_process(&mut currently_playing, &track.title, &music_dir);
+                }
+
+                if let Some(track) = queue_next() {
+                    current_track = Some(track.clone());
+                    currently_playing =
+                        Some(player::play_file(&track.url, &track.title, &music_dir)?);
 
                     if !no_autoplay {
-                        if !video_id.is_empty() {
-                            let yt = yt_client.clone();
-                            let vid = video_id.clone();
-                            tokio::spawn(async move {
-                                queue_auto_add(yt, vid).await;
-                            });
-                        } else {
-                            if let Some((path, name)) = shuffle_play(&music_dir)? {
-                                queue_add(path, name, String::new());
-                                refresh_ui(None);
+                        if offline_mode {
+                            let exclude = get_excluded_titles();
+                            {
+                                let mut q = SONG_QUEUE.write().unwrap();
+                                offline::populate_queue_offline(&music_dir, &mut q, &exclude);
                             }
+                        } else if let Some(vid) = &track.video_id {
+                            let yt = yt_client.clone();
+                            let v = vid.clone();
+                            tokio::spawn(async move {
+                                queue_auto_add_online(yt, v).await;
+                            });
                         }
                     }
-                    refresh_ui(Some(&name));
+                    refresh_ui(Some(&track.title));
+                } else {
+                    current_track = None;
+                    refresh_ui(Some("Nothing Playing"));
+                }
+                continue;
+            }
+            "p" | "prev" => {
+                if let Some(track) = &current_track {
+                    player::stop_process(&mut currently_playing, &track.title, &music_dir);
+                    queue_add_front(track.clone());
+                }
+
+                if let Some(prev_track) = get_prev_track() {
+                    current_track = Some(prev_track.clone());
+                    currently_playing = Some(player::play_file(
+                        &prev_track.url,
+                        &prev_track.title,
+                        &music_dir,
+                    )?);
+                    refresh_ui(Some(&prev_track.title));
+                } else {
+                    refresh_ui(None);
                 }
                 continue;
             }
@@ -176,8 +265,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             refresh_ui(None);
             continue;
         }
+
         //search using custom api
-        let songs = yt_client.search_songs(&input, 5).await?;
+        let songs = match yt_client.search_songs(&input, 5).await {
+            Ok(s) => s,
+            Err(_) => {
+                println!("Search failed.");
+                continue;
+            }
+        };
 
         if songs.is_empty() {
             println!("No results.");
@@ -202,16 +298,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let src = if path.exists() {
                     path.to_string_lossy().to_string()
                 } else {
-                    yt_client.fetch_stream_url(&selected.video_id).await?
+                    match yt_client.fetch_stream_url(&selected.video_id).await {
+                        Ok(u) => u,
+                        Err(_) => {
+                            println!("Failed to get URL");
+                            continue;
+                        }
+                    }
                 };
 
+                let new_track =
+                    Track::new(selected.title.clone(), src, Some(selected.video_id.clone()));
+
                 if is_queue {
-                    queue_add(src, selected.title.clone(), selected.video_id.clone());
+                    queue_add(new_track);
                     refresh_ui(None);
                 } else {
-                    player::stop_process(&mut currently_playing, &current_song_title, &music_dir);
-                    current_song_title = selected.title.clone();
-                    currently_playing = Some(player::play_file(&src, &selected.title, &music_dir)?);
+                    if let Some(track) = &current_track {
+                        add_to_history(track.clone());
+                        player::stop_process(&mut currently_playing, &track.title, &music_dir);
+                    }
+
+                    current_track = Some(new_track.clone());
+                    currently_playing = Some(player::play_file(
+                        &new_track.url,
+                        &new_track.title,
+                        &music_dir,
+                    )?);
 
                     if !no_autoplay {
                         //add similar songs in background
@@ -220,10 +333,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         SONG_QUEUE.write().unwrap().clear();
                         RELATED_SONG_LIST.write().unwrap().clear();
                         tokio::spawn(async move {
-                            queue_auto_add(yt, vid).await;
+                            queue_auto_add_online(yt, vid).await;
                         });
                     }
-                    refresh_ui(Some(&selected.title));
+                    refresh_ui(Some(&new_track.title));
                 }
             } else {
                 refresh_ui(None);
@@ -238,12 +351,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// -------------------------------------------------------------------
 
 fn refresh_ui(song_name: Option<&str>) {
-    let q = SONG_QUEUE.read().unwrap();
-    let queue_titles: Vec<String> = q.iter().map(|(_, t, _)| t.clone()).collect();
-    ui::load_banner(song_name, &queue_titles);
+    let mode = VIEW_MODE.read().unwrap().clone();
+
+    let titles: Vec<String> = if mode == "recent" {
+        let h = RECENTLY_PLAYED.read().unwrap();
+        h.iter().map(|t| t.title.clone()).rev().collect()
+    } else {
+        let q = SONG_QUEUE.read().unwrap();
+        q.iter().map(|t| t.title.clone()).collect()
+    };
+
+    ui::load_banner(song_name, &titles, &mode);
 }
 
-pub async fn queue_auto_add(yt: api::YTMusic, id: String) {
+fn add_to_history(track: Track) {
+    let mut list = RECENTLY_PLAYED.write().unwrap();
+    if let Some(last) = list.back() {
+        if last.title == track.title {
+            return;
+        }
+    }
+    if list.len() >= HISTORY_LIMIT {
+        list.pop_front();
+    }
+    list.push_back(track);
+}
+
+fn get_prev_track() -> Option<Track> {
+    let mut list = RECENTLY_PLAYED.write().unwrap();
+    list.pop_back()
+}
+
+fn queue_add(track: Track) {
+    let mut q = SONG_QUEUE.write().unwrap();
+    q.push(track);
+}
+
+fn queue_add_front(track: Track) {
+    let mut q = SONG_QUEUE.write().unwrap();
+    q.insert(0, track);
+}
+
+fn queue_next() -> Option<Track> {
+    let mut q = SONG_QUEUE.write().unwrap();
+    if !q.is_empty() {
+        Some(q.remove(0))
+    } else {
+        None
+    }
+}
+
+fn get_excluded_titles() -> Vec<String> {
+    let mut titles = Vec::new();
+    let history = RECENTLY_PLAYED.read().unwrap();
+    let queue = SONG_QUEUE.read().unwrap();
+    titles.extend(history.iter().map(|t| t.title.clone()));
+    titles.extend(queue.iter().map(|t| t.title.clone()));
+    titles
+}
+
+pub async fn queue_auto_add_online(yt: api::YTMusic, id: String) {
     //check if queue is almost over
     let needs_songs = {
         let q = SONG_QUEUE.read().unwrap();
@@ -256,6 +423,7 @@ pub async fn queue_auto_add(yt: api::YTMusic, id: String) {
             let c = RELATED_SONG_LIST.read().unwrap();
             c.is_empty()
         };
+
         if cache_empty {
             if let Ok(related) = yt.fetch_related_songs(&id, 50).await {
                 println!("\n\nLooking for similar songs...");
@@ -282,46 +450,9 @@ pub async fn queue_auto_add(yt: api::YTMusic, id: String) {
         // Resolve stream URLs and add to queue
         for (title, video_id) in to_fetch {
             if let Ok(url) = yt.fetch_stream_url(&video_id).await {
-                queue_add(url, title, video_id);
+                queue_add(Track::new(title, url, Some(video_id)));
             }
         }
         refresh_ui(None);
     }
-}
-
-fn queue_add(src: String, name: String, video_id: String) {
-    let mut q = SONG_QUEUE.write().unwrap();
-    q.push((src, name, video_id));
-}
-
-fn queue_next() -> Option<(String, String, String)> {
-    let mut q = SONG_QUEUE.write().unwrap();
-    if !q.is_empty() {
-        Some(q.remove(0))
-    } else {
-        None
-    }
-}
-
-fn shuffle_play(
-    dir: &std::path::PathBuf,
-) -> Result<Option<(String, String)>, Box<dyn std::error::Error>> {
-    use rand::seq::IndexedRandom;
-    let entries = std::fs::read_dir(dir)?;
-    let songs: Vec<_> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |e| e == "webm"))
-        .collect();
-
-    if songs.is_empty() {
-        return Ok(None);
-    }
-    let s = songs.choose(&mut rand::rng()).unwrap();
-    let name = s
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    Ok(Some((s.to_string_lossy().to_string(), name)))
 }

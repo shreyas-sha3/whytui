@@ -172,7 +172,6 @@ impl YTMusic {
         Ok(best.to_string())
     }
 }
-// --- NEW: Simple lyrics fetcher (lrclib.net) ---
 pub fn split_title_artist(input: &str) -> (String, String) {
     if let (Some(start), Some(end)) = (input.rfind('['), input.rfind(']')) {
         if end > start {
@@ -181,14 +180,13 @@ pub fn split_title_artist(input: &str) -> (String, String) {
             return (title, artist);
         }
     }
-    // fallback if no [artist] part
     (input.trim().to_string(), String::new())
 }
 
 pub async fn _fetch_lyrics(title_artist: &str) -> Result<String, Box<dyn Error>> {
     let (title, artist) = split_title_artist(title_artist);
 
-    let client = Client::new(); // independent function → must create our own client
+    let client = Client::new();
 
     let url = format!(
         "https://lrclib.net/api/get?track_name={}&artist_name={}",
@@ -214,51 +212,47 @@ pub struct LrcLine {
     pub text: String,
 }
 
-pub async fn fetch_synced_lyrics(title_artist: &str) -> Result<Vec<LrcLine>, Box<dyn Error>> {
+pub async fn fetch_synced_lyrics(
+    title_artist: &str,
+) -> Result<Vec<LrcLine>, Box<dyn std::error::Error + Send + Sync>> {
     let (title, artist) = split_title_artist(title_artist);
     let client = reqwest::Client::new();
 
-    // checking search endpoint first
-    let search_url = format!(
+    let mut search_urls = Vec::new();
+
+    search_urls.push(format!(
         "https://lrclib.net/api/search?track_name={}&artist_name={}",
         urlencoding::encode(&title),
         urlencoding::encode(&artist)
-    );
+    ));
 
-    let search_resp = client.get(&search_url).send().await?;
+    if let Some((clean_title, _)) = title.split_once(" - ") {
+        search_urls.push(format!(
+            "https://lrclib.net/api/search?track_name={}",
+            urlencoding::encode(clean_title)
+        ));
+    }
 
-    if search_resp.status().is_success() {
-        let json: Value = search_resp.json().await?;
+    search_urls.push(format!(
+        "https://lrclib.net/api/search?q={}",
+        urlencoding::encode(title_artist)
+    ));
 
-        if let Some(arr) = json.as_array() {
-            for entry in arr {
-                if let Some(sync) = entry["syncedLyrics"].as_str() {
-                    if !sync.trim().is_empty() {
-                        return Ok(parse_lrc(sync));
+    for url in search_urls {
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                if let Ok(json) = resp.json::<Value>().await {
+                    if let Some(arr) = json.as_array() {
+                        for entry in arr {
+                            if let Some(sync) = entry["syncedLyrics"].as_str() {
+                                if !sync.trim().is_empty() {
+                                    return Ok(parse_lrc(sync));
+                                }
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
-
-    // fallback to get endpoint
-    let get_url = format!(
-        "https://lrclib.net/api/get?track_name={}&artist_name={}",
-        urlencoding::encode(&title),
-        urlencoding::encode(&artist)
-    );
-
-    let get_resp = client.get(&get_url).send().await?;
-
-    if !get_resp.status().is_success() {
-        return Err("Lyrics not found".into());
-    }
-
-    let json: Value = get_resp.json().await?;
-
-    if let Some(sync) = json["syncedLyrics"].as_str() {
-        if !sync.trim().is_empty() {
-            return Ok(parse_lrc(sync));
         }
     }
 
