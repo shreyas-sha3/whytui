@@ -252,7 +252,7 @@ fn start_monitor_thread(name: String) -> Arc<AtomicBool> {
                 out
             };
 
-            let title = format!("{} [{}]", title, artist_scroll);
+            let title = format!("{} [{}]", title, artist_scroll.dimmed());
 
             queue!(
                 stdout,
