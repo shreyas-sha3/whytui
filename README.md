@@ -45,18 +45,14 @@ curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Lates
 
 * Commands:
 
-  * `RETURN`  → pause the song
+  * `p | pause`  → pause the song
   * `n | next`  → play next song in the queue
-  * `p | prev`  → play previous song in the queue
-  * `t`  → toggle queue and recently played
-  * `< / >`   → seek song in seconds (e.g., `>10` to seek 10 seconds forward)
   * `c | clear`  → clear the queue
+  * `< / >`   → seek song in seconds (e.g., `>10` to seek 10 seconds forward)
   * `stop`  → stop current song
   * `exit`  → quit the application
 
-* Arguments:
-  * `--no-autoplay` to disable autoplay
-  * `--offline-playback` to just play offline songs
+#### Note: Run with `--no-autoplay` to disable autoplay
 
 ## Requirements
 

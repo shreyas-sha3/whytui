@@ -1,15 +1,15 @@
 mod api;
 mod offline;
 mod player;
-mod ui1;
-mod ui2;
+mod ui;
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::process::Child;
-use std::sync::atomic::Ordering;
 use std::sync::{RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
+
 /// -------------------------------------------------------------------
 /// DATA STRUCTURES
 /// -------------------------------------------------------------------
@@ -42,7 +42,6 @@ static RECENTLY_PLAYED: RwLock<VecDeque<Track>> = RwLock::new(VecDeque::new());
 const HISTORY_LIMIT: usize = 50;
 
 static VIEW_MODE: RwLock<String> = RwLock::new(String::new());
-static USE_UI_2: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,10 +49,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let offline_mode = args.contains(&"--offline-playback".to_string());
     let no_autoplay = args.contains(&"--no-autoplay".to_string());
-
-    if args.contains(&"--ui-mode=2".to_string()) {
-        USE_UI_2.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
 
     *VIEW_MODE.write().unwrap() = "queue".to_string();
 
@@ -272,10 +267,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         //search using custom api
-        if offline_mode {
-            refresh_ui(None);
-            continue;
-        }
         let songs = match yt_client.search_songs(&input, 5).await {
             Ok(s) => s,
             Err(_) => {
@@ -290,7 +281,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        ui1::show_songs(&songs);
+        ui::show_songs(&songs);
 
         // check if q is entered before index
         if let Ok(sel) = rx.recv() {
@@ -362,7 +353,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn refresh_ui(song_name: Option<&str>) {
     let mode = VIEW_MODE.read().unwrap().clone();
 
-    // prepare data to send
     let titles: Vec<String> = if mode == "recent" {
         let h = RECENTLY_PLAYED.read().unwrap();
         h.iter().map(|t| t.title.clone()).rev().collect()
@@ -371,13 +361,7 @@ fn refresh_ui(song_name: Option<&str>) {
         q.iter().map(|t| t.title.clone()).collect()
     };
 
-    if USE_UI_2.load(Ordering::Relaxed) {
-        // Bigger UI
-        ui2::load_banner(song_name, &titles, &mode);
-    } else {
-        // Smaller UI
-        ui1::load_banner(song_name, &titles, &mode);
-    }
+    ui::load_banner(song_name, &titles, &mode);
 }
 
 fn add_to_history(track: Track) {
