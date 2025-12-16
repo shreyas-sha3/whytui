@@ -55,8 +55,10 @@ curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Lates
   * `exit`  → quit the application
 
 * Arguments:
-  * `--no-autoplay` to disable autoplay
-  * `--offline-playback` to just play offline songs
+  * `--manual` to disable autoplay
+  * `--offline` to just play offline songs
+
+* Note: Netscape cookies can be added at $MusicDir/whytui/config/cookies.txt
 
 ## Requirements
 

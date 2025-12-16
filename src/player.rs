@@ -1,4 +1,5 @@
 use serde_json::json;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -7,8 +8,15 @@ use std::time::Duration;
 pub fn prepare_music_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let mut d = dirs::audio_dir().ok_or("No audio dir")?;
     d.push("whytui");
-    std::fs::create_dir_all(&d)?;
-    std::fs::create_dir_all(d.join("temp"))?;
+    fs::create_dir_all(&d)?;
+    fs::create_dir_all(d.join("temp"))?;
+    let config_dir = d.join("config");
+    fs::create_dir_all(&config_dir)?;
+    let cookies_path = config_dir.join("cookies.txt");
+    if !cookies_path.exists() {
+        File::create(&cookies_path)?;
+    }
+
     Ok(d)
 }
 
@@ -98,4 +106,8 @@ pub fn toggle_pause() {
 
 pub fn seek(s: i64) {
     send_ipc(json!({"command": ["seek", s, "relative"]}));
+}
+
+pub fn vol_change(s: i64) {
+    send_ipc(json!({ "command": ["add", "volume", 5*s] }));
 }

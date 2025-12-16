@@ -52,16 +52,17 @@ static UI_MODE: AtomicUsize = AtomicUsize::new(0);
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //collect arguments
     let args: Vec<String> = std::env::args().collect();
-    let offline_mode = args.contains(&"--offline-playback".to_string());
-    let no_autoplay = args.contains(&"--no-autoplay".to_string());
+    let offline_mode = args.contains(&"--offline".to_string());
+    let no_autoplay = args.contains(&"--manual".to_string());
     *VIEW_MODE.write().unwrap() = "queue".to_string();
 
     print!("\x1B[2J\x1B[1;1H\n");
 
     //create music_dir and temp dir to store currently playing song
     let music_dir = player::prepare_music_dir()?;
-    //Custom unofficial api
-    let yt_client = api::YTMusic::new_with_cookies("cookies.txt").unwrap();
+    //Custom unofficial apiz
+    let cookies_path = music_dir.join("config/cookies.txt");
+    let yt_client = api::YTMusic::new_with_cookies(cookies_path.to_str().unwrap()).unwrap();
 
     let mut currently_playing: Option<Child> = None;
     let mut current_track: Option<Track> = None;
@@ -203,6 +204,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 refresh_ui(None);
                 continue;
             }
+            s if s.chars().all(|c| c == '-' || c == '+') => {
+                let delta: i64 = s.chars().map(|c| if c == '+' { 1 } else { -1 }).sum();
+                player::vol_change(delta);
+                refresh_ui(None);
+                continue;
+            }
             "p" | "pause" => {
                 if currently_playing.is_some() {
                     player::toggle_pause();
@@ -219,6 +226,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Status: {}", user_status);
                 continue;
             }
+            //toggle between the ui modes
             "v" | "view" => {
                 let current_mode = UI_MODE.load(Ordering::Relaxed);
 
@@ -251,37 +259,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 refresh_ui(None);
                 continue;
             }
-            "n" | "next" => {
-                if let Some(track) = &current_track {
-                    add_to_history(track.clone());
-                    player::stop_process(&mut currently_playing, &track.title, &music_dir);
-                }
-
-                if let Some(track) = queue_next() {
-                    current_track = Some(track.clone());
-                    currently_playing =
-                        Some(player::play_file(&track.url, &track.title, &music_dir)?);
-
-                    if !no_autoplay {
-                        if offline_mode {
-                            let exclude = get_excluded_titles();
-                            {
-                                let mut q = SONG_QUEUE.write().unwrap();
-                                offline::populate_queue_offline(&music_dir, &mut q, &exclude);
-                            }
-                        } else if let Some(vid) = &track.video_id {
-                            let yt = yt_client.clone();
-                            let v = vid.clone();
-                            tokio::spawn(async move {
-                                queue_auto_add_online(yt, v).await;
-                            });
-                        }
-                    }
-                    refresh_ui(Some(&track.title));
+            //next song in queue can also be done as n#
+            s if s == "n" || s == "next" || s.starts_with('n') => {
+                let steps = if s == "n" || s == "next" {
+                    1
                 } else {
-                    current_track = None;
-                    refresh_ui(Some("Nothing Playing"));
+                    s[1..].parse::<usize>().unwrap_or(1)
+                };
+
+                for _ in 0..steps {
+                    if let Some(track) = &current_track {
+                        add_to_history(track.clone());
+                        player::stop_process(&mut currently_playing, &track.title, &music_dir);
+                    }
+
+                    if let Some(track) = queue_next() {
+                        current_track = Some(track.clone());
+                        currently_playing =
+                            Some(player::play_file(&track.url, &track.title, &music_dir)?);
+
+                        if !no_autoplay {
+                            if offline_mode {
+                                let exclude = get_excluded_titles();
+                                {
+                                    let mut q = SONG_QUEUE.write().unwrap();
+                                    offline::populate_queue_offline(&music_dir, &mut q, &exclude);
+                                }
+                            } else if let Some(vid) = &track.video_id {
+                                let yt = yt_client.clone();
+                                let v = vid.clone();
+                                tokio::spawn(async move {
+                                    queue_auto_add_online(yt, v).await;
+                                });
+                            }
+                        }
+
+                        refresh_ui(Some(&track.title));
+                    } else {
+                        current_track = None;
+                        refresh_ui(Some("Nothing Playing"));
+                        break;
+                    }
                 }
+
                 continue;
             }
 
