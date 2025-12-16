@@ -3,13 +3,17 @@ mod offline;
 mod player;
 mod ui1;
 mod ui2;
-
+mod ui3;
+mod ui_common;
+use crossterm::event::{self, Event};
 use std::collections::VecDeque;
 use std::process::Child;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
+
+use crate::ui1::show_playlists;
 /// -------------------------------------------------------------------
 /// DATA STRUCTURES
 /// -------------------------------------------------------------------
@@ -42,7 +46,7 @@ static RECENTLY_PLAYED: RwLock<VecDeque<Track>> = RwLock::new(VecDeque::new());
 const HISTORY_LIMIT: usize = 50;
 
 static VIEW_MODE: RwLock<String> = RwLock::new(String::new());
-static USE_UI_2: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static UI_MODE: AtomicUsize = AtomicUsize::new(0);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -50,11 +54,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let offline_mode = args.contains(&"--offline-playback".to_string());
     let no_autoplay = args.contains(&"--no-autoplay".to_string());
-
-    if args.contains(&"--ui-mode=2".to_string()) {
-        USE_UI_2.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
     *VIEW_MODE.write().unwrap() = "queue".to_string();
 
     print!("\x1B[2J\x1B[1;1H\n");
@@ -62,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //create music_dir and temp dir to store currently playing song
     let music_dir = player::prepare_music_dir()?;
     //Custom unofficial api
-    let yt_client = api::YTMusic::new();
+    let yt_client = api::YTMusic::new_with_cookies("cookies.txt").unwrap();
 
     let mut currently_playing: Option<Child> = None;
     let mut current_track: Option<Track> = None;
@@ -106,6 +105,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     loop {
+        if event::poll(std::time::Duration::from_millis(0))? {
+            match event::read()? {
+                Event::Resize(_, _) => {
+                    print!("\x1B[2J\x1B[1;1H\n");
+
+                    refresh_ui(None);
+                }
+                _ => {}
+            }
+        }
         // firstly checks if song is playing
         if let Some(child) = &mut currently_playing {
             if let Ok(Some(_)) = child.try_wait() {
@@ -165,16 +174,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         if input.is_empty() {
-            if currently_playing.is_some() {
-                player::toggle_pause();
-            }
+            print!("\x1B[2J\x1B[1;1H\n");
             refresh_ui(None);
             continue;
         }
 
         // special commands
         match input.to_lowercase().as_str() {
-            "exit" => {
+            "q" | "quit" => {
                 if let Some(track) = &current_track {
                     add_to_history(track.clone());
                     player::stop_process(&mut currently_playing, &track.title, &music_dir);
@@ -182,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 refresh_ui(None);
                 break;
             }
-            "stop" => {
+            "s" | "stop" => {
                 if let Some(track) = &current_track {
                     add_to_history(track.clone());
                     player::stop_process(&mut currently_playing, &track.title, &music_dir);
@@ -194,6 +201,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "c" | "clear" => {
                 SONG_QUEUE.write().unwrap().clear();
                 refresh_ui(None);
+                continue;
+            }
+            "p" | "pause" => {
+                if currently_playing.is_some() {
+                    player::toggle_pause();
+                }
+                refresh_ui(None);
+                continue;
+            }
+
+            "u" | "user" => {
+                let user_status = yt_client
+                    .fetch_account_name()
+                    .await
+                    .unwrap_or("Error".to_string());
+                println!("Status: {}", user_status);
+                continue;
+            }
+            "v" | "view" => {
+                let current_mode = UI_MODE.load(Ordering::Relaxed);
+
+                match current_mode {
+                    0 => ui1::stop_lyrics(),
+                    1 => ui2::stop_lyrics(),
+                    2 => ui3::stop_lyrics(),
+                    _ => {}
+                }
+
+                let next_ui_mode = (current_mode + 1) % 3;
+                UI_MODE.store(next_ui_mode, Ordering::Relaxed);
+
+                print!("\x1B[2J\x1B[1;1H\n");
+
+                let title_ref = current_track.as_ref().map(|t| t.title.as_str());
+                refresh_ui(title_ref);
+
                 continue;
             }
             "t" | "toggle" => {
@@ -241,7 +284,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 continue;
             }
-            "p" | "prev" => {
+
+            "b" | "back" => {
                 if let Some(track) = &current_track {
                     player::stop_process(&mut currently_playing, &track.title, &music_dir);
                     queue_add_front(track.clone());
@@ -276,18 +320,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             refresh_ui(None);
             continue;
         }
-        let songs = match yt_client.search_songs(&input, 5).await {
-            Ok(s) => s,
-            Err(_) => {
-                println!("Search failed.");
+
+        let mut songs: Vec<api::SongDetails> = Vec::new();
+        if input != "l" && input != "library" {
+            songs = match yt_client.search_songs(&input, 5).await {
+                Ok(s) => s,
+                Err(_) => {
+                    println!("Search failed.");
+                    continue;
+                }
+            };
+
+            if songs.is_empty() {
+                println!("No results.");
+                refresh_ui(None);
                 continue;
             }
-        };
 
-        if songs.is_empty() {
-            println!("No results.");
-            refresh_ui(None);
-            continue;
+            //Auto Selection for minimal mode (ui=0)
+            if UI_MODE.load(Ordering::Relaxed) == 2 {
+                let auto_selected = &songs[0];
+
+                let path = music_dir.join(format!("{}.webm", auto_selected.title));
+
+                let src = if path.exists() {
+                    path.to_string_lossy().to_string()
+                } else {
+                    match yt_client.fetch_stream_url(&auto_selected.video_id).await {
+                        Ok(u) => u,
+                        Err(_) => {
+                            println!("Failed to get URL");
+                            continue;
+                        }
+                    }
+                };
+
+                let new_track = Track::new(
+                    auto_selected.title.clone(),
+                    src,
+                    Some(auto_selected.video_id.clone()),
+                );
+                if let Some(track) = &current_track {
+                    add_to_history(track.clone());
+                    player::stop_process(&mut currently_playing, &track.title, &music_dir);
+                }
+
+                current_track = Some(new_track.clone());
+                currently_playing = Some(player::play_file(
+                    &new_track.url,
+                    &new_track.title,
+                    &music_dir,
+                )?);
+                if !no_autoplay {
+                    //add similar songs in background
+                    let yt = yt_client.clone();
+                    let vid = auto_selected.video_id.clone();
+                    SONG_QUEUE.write().unwrap().clear();
+                    RELATED_SONG_LIST.write().unwrap().clear();
+                    tokio::spawn(async move {
+                        queue_auto_add_online(yt, vid).await;
+                    });
+                }
+                refresh_ui(Some(&new_track.title));
+
+                continue;
+            }
+            //Auto Selection code over
+        } else {
+            println!("Fetching Library...");
+            let playlists = yt_client.fetch_library_playlists().await?;
+            show_playlists(&playlists);
+            if let Ok(sel_str) = rx.recv() {
+                let sel = sel_str.trim().parse::<usize>().unwrap_or(0);
+
+                if sel >= 1 && sel <= playlists.len() {
+                    let selected_playlist = &playlists[sel - 1];
+                    println!("Loading '{}'...", selected_playlist.title);
+
+                    songs = yt_client
+                        .fetch_playlist_songs(&selected_playlist.playlist_id, 100)
+                        .await?;
+                }
+                refresh_ui(None);
+            }
         }
 
         ui1::show_songs(&songs);
@@ -348,6 +463,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     refresh_ui(Some(&new_track.title));
                 }
             } else {
+                print!("\x1B[2J\x1B[1;1H\n");
                 refresh_ui(None);
             }
         }
@@ -361,7 +477,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn refresh_ui(song_name: Option<&str>) {
     let mode = VIEW_MODE.read().unwrap().clone();
-
+    let ui_mode = UI_MODE.load(Ordering::Relaxed);
     // prepare data to send
     let titles: Vec<String> = if mode == "recent" {
         let h = RECENTLY_PLAYED.read().unwrap();
@@ -371,12 +487,12 @@ fn refresh_ui(song_name: Option<&str>) {
         q.iter().map(|t| t.title.clone()).collect()
     };
 
-    if USE_UI_2.load(Ordering::Relaxed) {
-        // Bigger UI
-        ui2::load_banner(song_name, &titles, &mode);
-    } else {
-        // Smaller UI
+    if ui_mode == 0 {
         ui1::load_banner(song_name, &titles, &mode);
+    } else if ui_mode == 1 {
+        ui2::load_banner(song_name, &titles, &mode);
+    } else if ui_mode == 2 {
+        ui3::load_banner(song_name, &titles, &mode);
     }
 }
 
@@ -442,7 +558,7 @@ pub async fn queue_auto_add_online(yt: api::YTMusic, id: String) {
 
         if cache_empty {
             if let Ok(related) = yt.fetch_related_songs(&id, 50).await {
-                println!("\n\nLooking for similar songs...");
+                // println!("\n\nLooking for similar songs...");
                 let mut c = RELATED_SONG_LIST.write().unwrap();
                 for song in related {
                     c.push((song.title, song.video_id));
