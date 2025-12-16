@@ -3,8 +3,9 @@
 A terminal-based YouTube music player written in Rust.  
 Search, download, and play songs directly from the terminal.
 
-
-<img width="438" height="412" alt="image" src="https://github.com/user-attachments/assets/a3b89f68-eeca-4728-998c-7271608bf2c7" />
+UI 1             |  UI 2                               | UI 3
+:-------------------------:|:-------------------------:|:-------------------------:
+<img width="700" height="600" alt="image" src="https://github.com/user-attachments/assets/0e6f7643-ec98-446b-b361-5f3b7a4c77b0" /> |<img width="700" height="700" alt="image" src="https://github.com/user-attachments/assets/88dbb7d5-6c83-4e2e-a6ae-4b79abc90d55" />  | <img width="500" height="600" alt="image" src="https://github.com/user-attachments/assets/6285ef05-387f-4867-9532-216e4cb7347e" />
 
 
 ## Features
@@ -58,7 +59,7 @@ curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Lates
   * `--manual` to disable autoplay
   * `--offline` to just play offline songs
 
-* Note: Netscape cookies can be added at $MusicDir/whytui/config/cookies.txt
+* Note: Netscape cookies can be added at `$MusicDir/whytui/config/cookies.txt`
 
 ## Requirements
 
