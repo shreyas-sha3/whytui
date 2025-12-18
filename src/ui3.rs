@@ -23,16 +23,16 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], _toggle: &str)
     queue!(
         stdout,
         cursor::Hide,
-        cursor::MoveTo(0, 0),
-        terminal::Clear(ClearType::All)
+        cursor::MoveTo(0, rows - 4),
+        terminal::Clear(ClearType::FromCursorDown)
     )
     .unwrap();
 
     let next_song_name = if let Some(s) = queue.first() {
         let (title, _) = split_title_artist(s);
-        format!("Next: {}", title)
+        format!("Up Next: {}", title)
     } else {
-        "Next: None".to_string()
+        "Up Next: ~".to_string()
     };
 
     let prompt_row = rows.saturating_sub(2);
@@ -41,7 +41,7 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], _toggle: &str)
         stdout,
         cursor::MoveTo(0, prompt_row),
         Print(format!("{}", "> ".bright_blue().bold())),
-        cursor::Show
+        cursor::Hide
     )
     .unwrap();
 
@@ -85,7 +85,7 @@ fn draw_minimal_ui(
     tot: f64,
     lyrics: &[crate::api::LrcLine],
     current_idx: usize,
-    up_next: &str,
+    mut up_next: &str,
 ) {
     let mut stdout = stdout();
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
@@ -93,7 +93,7 @@ fn draw_minimal_ui(
 
     let footer_row_up_next = rows.saturating_sub(4);
 
-    let lyric_area_start = 5;
+    let lyric_area_start = 4;
     let lyric_area_end = footer_row_up_next - 1;
 
     let available_lyric_height = lyric_area_end.saturating_sub(lyric_area_start);
@@ -119,13 +119,13 @@ fn draw_minimal_ui(
 
     queue!(
         stdout,
-        cursor::MoveTo(0, 1),
+        cursor::MoveTo(0, 0),
         terminal::Clear(ClearType::CurrentLine),
         Print(format!("  {}", title_scroll.white().bold())),
-        cursor::MoveTo(0, 2),
+        cursor::MoveTo(0, 1),
         terminal::Clear(ClearType::CurrentLine),
         Print(format!("  {}", artist_scroll.dimmed())),
-        cursor::MoveTo(0, 3),
+        cursor::MoveTo(0, 2),
         terminal::Clear(ClearType::CurrentLine),
         Print(format!(
             "  {} {} {}",
@@ -155,10 +155,17 @@ fn draw_minimal_ui(
         for (i, line) in active_lines.iter().enumerate() {
             let r = active_block_start + i as u16;
             if r >= lyric_area_start && r < lyric_area_end {
+                let (prefix, text_line) = if i == 0 {
+                    (format!("{} ", "→".cyan()), line.white().bold())
+                } else {
+                    (format!("  "), line.white().bold())
+                };
+
                 queue!(
                     stdout,
                     cursor::MoveTo(2, r),
-                    Print(format!("{} {}", "→".cyan(), line.white().bold()))
+                    terminal::Clear(ClearType::CurrentLine),
+                    Print(format!("{}{}", prefix, text_line))
                 )
                 .unwrap();
             }
@@ -210,17 +217,18 @@ fn draw_minimal_ui(
         }
     }
 
+    up_next = blindly_trim(&up_next);
     let safe_up_next = truncate_safe(up_next, width_usize.saturating_sub(2));
 
     queue!(
         stdout,
         cursor::MoveTo(0, footer_row_up_next),
         terminal::Clear(ClearType::CurrentLine),
-        Print(format!("  {}", safe_up_next.dimmed().italic()))
+        Print(format!("{}", safe_up_next.dimmed().italic()))
     )
     .unwrap();
 
-    queue!(stdout, cursor::RestorePosition, cursor::Show).unwrap();
+    queue!(stdout, cursor::RestorePosition, cursor::Hide).unwrap();
     stdout.flush().unwrap();
 }
 
@@ -271,6 +279,14 @@ fn truncate_safe(s: &str, max_width: usize) -> String {
         width += w;
     }
     result
+}
+
+fn blindly_trim(text: &str) -> &str {
+    let first = text
+        .split(|c| c == '-' || c == '(' || c == '[' || c == '_')
+        .next()
+        .unwrap_or("");
+    first
 }
 
 fn word_wrap_cjk(text: &str, max_width: usize) -> Vec<String> {

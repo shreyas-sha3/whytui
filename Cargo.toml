@@ -19,3 +19,5 @@ sha1 = "0.10"
 hex = "0.4"
 # openssl = { version = "0.10", features = ["vendored"] }
 time = "0.3"
+url = "2.5.7"
+chrono = { version = "0.4", features = ["serde"] }

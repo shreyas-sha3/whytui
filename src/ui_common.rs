@@ -97,12 +97,18 @@ pub fn show_songs(list: &[SongDetails]) {
     for (i, s) in list.iter().enumerate() {
         println!("{}. {} [{}]", i + 1, s.title, s.duration.cyan().italic());
     }
-    print!("{}", "~ Select (1-n): ".bright_blue().bold().blink());
+    print!(
+        "{}",
+        format!("\n~ Select (1-{}): ", list.len())
+            .bright_blue()
+            .bold()
+            .blink()
+    );
     stdout().flush().unwrap();
 }
 
 pub fn show_playlists(list: &[PlaylistDetails]) {
-    println!("\n{}", "--- 📚 YOUR LIBRARY ---".bold().underline());
+    println!("\n{}", "--- YOUR LIBRARY ---".bold().underline());
     for (i, p) in list.iter().enumerate() {
         println!(
             "{}. {} {}",
@@ -176,7 +182,7 @@ where
 
             for (i, l) in lyrics.iter().enumerate() {
                 let ts = dur_to_secs(l.timestamp);
-                if curr + 0.25 >= ts {
+                if curr + 0.29 >= ts {
                     current_idx = i;
                 } else {
                     break;
@@ -185,7 +191,7 @@ where
 
             draw_callback(&title, &artist, &name, curr, tot, &lyrics, current_idx);
 
-            thread::sleep(Duration::from_millis(250));
+            thread::sleep(Duration::from_millis(500));
         }
     });
 

@@ -61,7 +61,7 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], toggle: &str) 
     queue!(
         stdout,
         Print(format!("\n\n{}", ">> ".bright_blue().bold())),
-        cursor::Show
+        cursor::Hide
     )
     .unwrap();
     stdout.flush().unwrap();
@@ -140,7 +140,7 @@ fn draw_ui1_status(
         terminal::Clear(ClearType::CurrentLine),
         Print(format!("{: <80}", next_text.dimmed().italic())),
         cursor::RestorePosition,
-        cursor::Show
+        cursor::Hide
     )
     .unwrap();
     stdout.flush().unwrap();
