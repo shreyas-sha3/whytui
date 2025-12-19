@@ -5,8 +5,13 @@ mod ui1;
 mod ui2;
 mod ui3;
 mod ui_common;
-use crossterm::event::{self, Event};
+use crossterm::{
+    event::{self, Event},
+    execute,
+    terminal::{self, Clear, ClearType},
+};
 use std::collections::VecDeque;
+use std::io::stdout;
 use std::process::Child;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{RwLock, mpsc};
@@ -76,8 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //contains song details (including vid_id for online songs)
     let mut current_track: Option<Track> = None;
     // CLEAR SCREEN BEFORE STARTING THE REAL SHIT
-    print!("\x1B[2J\x1B[1;1H\n");
-
+    execute!(stdout(), Clear(ClearType::All));
     //
     //
     //
@@ -151,11 +155,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // START OF GAME LOOP (BOTH ONLINE,OFFLINE)
     // -------------------------------------------------------------------
     loop {
-        if event::poll(std::time::Duration::from_millis(0))? {
+        if event::poll(Duration::from_millis(0))? {
             match event::read()? {
-                //POLL IF WINDOW IS RESIZED AND REFRESH UI
                 Event::Resize(_, _) => {
-                    print!("\x1B[2J\x1B[1;1H\n");
+                    execute!(stdout(), Clear(ClearType::All))?;
                     refresh_ui(None);
                 }
                 _ => {}
@@ -252,7 +255,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // CASE 1 : IF USER SIMLPY PRESSED ENTER REFRESH UI TO FIX ANY SCROLL
         // -------------------------------------------------------------------
         if input.is_empty() {
-            print!("\x1B[2J\x1B[1;1H\n");
+            execute!(stdout(), Clear(ClearType::All));
             refresh_ui(None);
             continue;
         }
@@ -462,7 +465,7 @@ async fn handle_global_commands(
             let next_ui_mode = (current_mode + 1) % 3;
             UI_MODE.store(next_ui_mode, Ordering::Relaxed);
 
-            print!("\x1B[2J\x1B[1;1H\n");
+            execute!(stdout(), Clear(ClearType::All));
 
             let title_ref = current_track.as_ref().map(|t| t.title.as_str());
             refresh_ui(title_ref);
@@ -670,6 +673,7 @@ async fn handle_library_browsing(
 
             loop {
                 refresh_ui(None);
+                println!(" [n] Next | [p] Prev");
 
                 {
                     let songs = LIBRARY_SONG_LIST.read().unwrap();
@@ -685,8 +689,6 @@ async fn handle_library_browsing(
                         }
                     }
                 }
-
-                println!(" [n] Next | [p] Prev");
 
                 if let Ok(input) = rx.recv() {
                     let what_to_do_now = input.as_str().trim();

@@ -26,6 +26,8 @@ pub fn play_file(
     music_dir: &PathBuf,
 ) -> Result<Child, Box<dyn std::error::Error>> {
     let ipc = get_ipc_path();
+
+    // Only remove socket file on Unix (Windows pipes are kernel objects)
     #[cfg(unix)]
     let _ = std::fs::remove_file(&ipc);
 
@@ -35,7 +37,6 @@ pub fn play_file(
         .arg("--force-window=no")
         .arg(format!("--input-ipc-server={}", ipc));
 
-    //if streaming... record to file simultaneously
     if source.starts_with("http") {
         let temp_path = music_dir.join("temp").join(format!("{}.webm", title));
         cmd.arg(format!("--stream-record={}", temp_path.to_string_lossy()));
@@ -51,7 +52,6 @@ pub fn stop_process(proc: &mut Option<Child>, song_name: &str, music_dir: &PathB
         let _ = child.kill();
         let _ = child.wait();
     }
-    // Delete partial download
     if !song_name.is_empty() {
         let temp = music_dir.join("temp").join(format!("{}.webm", song_name));
         if temp.exists() {
@@ -72,6 +72,7 @@ pub fn send_ipc(cmd: serde_json::Value) -> Option<String> {
     let path = get_ipc_path();
     let msg = format!("{}\n", cmd.to_string());
 
+    // --- UNIX IMPLEMENTATION ---
     #[cfg(unix)]
     {
         use std::os::unix::net::UnixStream;
@@ -88,6 +89,23 @@ pub fn send_ipc(cmd: serde_json::Value) -> Option<String> {
             }
         }
     }
+
+    // --- WINDOWS IMPLEMENTATION (New) ---
+    #[cfg(windows)]
+    {
+        use std::fs::OpenOptions;
+        if let Ok(mut file) = OpenOptions::new().read(true).write(true).open(&path) {
+            let _ = file.write_all(msg.as_bytes());
+            let _ = file.flush();
+
+            let mut reader = BufReader::new(&file);
+            let mut resp = String::new();
+            if reader.read_line(&mut resp).is_ok() {
+                return Some(resp);
+            }
+        }
+    }
+
     None
 }
 
