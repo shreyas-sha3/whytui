@@ -26,13 +26,18 @@ curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Lates
 ````
 
 2. MacOS:
-
+```bash
+brew install mpv
+```
 ```bash
 curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Latest/whytui-macos-x86_64 && chmod +x whytui && sudo mv whytui /usr/local/bin/
 ```
 
-2. Windows (oneliner for admin powershell):
-
+3. Windows:
+```bash
+winget install mpv
+```
+[oneliner for cmd as administrator]
 ```bash
 curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/download/Latest/whytui-win-x86_64.exe && move whytui.exe C:\Windows\
 ```

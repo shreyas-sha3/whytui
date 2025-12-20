@@ -4,3 +4,4 @@ Cargo.lock
 MacOSX13.3.sdk
 *.txt
 *.lock
+/for_github
