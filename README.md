@@ -31,6 +31,11 @@ curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Lates
 curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Latest/whytui-macos-x86_64 && chmod +x whytui && sudo mv whytui /usr/local/bin/
 ```
 
+2. Windows (oneliner for admin powershell):
+
+```bash
+iwr "https://github.com/shreyas-sha3/whytui/releases/download/Latest/whytui-windows-x86_64.exe" -OutFile "$env:SystemRoot\whytui.exe"
+```
  
 ## Usage
 
@@ -47,13 +52,15 @@ curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Lates
 * Commands:
 
   * `RETURN`  → pause the song
-  * `n | next`  → play next song in the queue
+  * `n | next`  → play next song in the queue (note: `n3` to skip 3 songs)
   * `p | prev`  → play previous song in the queue
   * `t`  → toggle queue and recently played
   * `< / >`   → seek song in seconds (e.g., `>10` to seek 10 seconds forward)
   * `c | clear`  → clear the queue
-  * `stop`  → stop current song
-  * `exit`  → quit the application
+  * `L | library` → show ytmusic playlists
+  * `l | like` → add currently playing song to liked songs
+  * `s | stop`  → stop current song
+  * `q | quit`  → quit the application
 
 * Arguments:
   * `--manual` to disable autoplay
