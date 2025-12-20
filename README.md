@@ -34,7 +34,7 @@ curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Lates
 2. Windows (oneliner for admin powershell):
 
 ```bash
-iwr "https://github.com/shreyas-sha3/whytui/releases/download/Latest/whytui-windows-x86_64.exe" -OutFile "$env:SystemRoot\whytui.exe"
+curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/download/Latest/whytui-win-x86_64.exe && move whytui.exe C:\Windows\
 ```
  
 ## Usage
