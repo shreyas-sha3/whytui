@@ -3,8 +3,8 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
-
 pub fn prepare_music_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let mut d = dirs::audio_dir().ok_or("No audio dir")?;
     d.push("whytui");
@@ -26,7 +26,7 @@ pub fn play_file(
     music_dir: &PathBuf,
 ) -> Result<Child, Box<dyn std::error::Error>> {
     let ipc = get_ipc_path();
-
+    let current_vol = crate::VOLUME.load(Ordering::Relaxed);
     // Only remove socket file on Unix (Windows pipes are kernel objects)
     #[cfg(unix)]
     let _ = std::fs::remove_file(&ipc);
@@ -35,15 +35,19 @@ pub fn play_file(
     cmd.arg("--no-video")
         .arg("--really-quiet")
         .arg("--force-window=no")
-        .arg(format!("--input-ipc-server={}", ipc));
+        .arg(format!("--input-ipc-server={}", ipc))
+        .arg(format!("--volume={}", current_vol));
 
     if source.starts_with("http") {
         let temp_path = music_dir.join("temp").join(format!("{}.webm", title));
         cmd.arg(format!("--stream-record={}", temp_path.to_string_lossy()));
     }
-
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+    }
     cmd.arg(source).stdout(Stdio::null()).stderr(Stdio::null());
-
     Ok(cmd.spawn()?)
 }
 
@@ -127,5 +131,5 @@ pub fn seek(s: i64) {
 }
 
 pub fn vol_change(s: i64) {
-    send_ipc(json!({ "command": ["add", "volume", 5*s] }));
+    send_ipc(json!({ "command": ["add", "volume", s] }));
 }

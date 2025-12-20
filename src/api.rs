@@ -332,12 +332,6 @@ impl YTMusic {
             None => format!("RDAMVM{}", video_id),
         };
 
-        // --- DEBUG PRINT 1: WHAT ARE WE SENDING? ---
-        println!(
-            "\n[DEBUG] Fetching Next. VideoID: {}, PlaylistID: {}",
-            video_id, resolved_playlist_id
-        );
-
         let payload = json!({
             "context": { "client": { "clientName": "WEB_REMIX", "clientVersion": "1.20251215.03.00", "hl": "en", "gl": "IN" } },
             "videoId": video_id,
@@ -345,13 +339,6 @@ impl YTMusic {
         });
 
         let res = self.post_auth(url, &payload).await?;
-
-        // --- DEBUG PRINT 2: DUMP TO FILE (Optional but helpful) ---
-        // Uncomment the next 2 lines if you want to save the full JSON to a file
-        let _ = std::fs::write(
-            "debug_youtube_response.json",
-            serde_json::to_string_pretty(&res).unwrap(),
-        );
 
         self.parse_related_songs(res, video_id, limit)
     }

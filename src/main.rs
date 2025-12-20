@@ -13,7 +13,7 @@ use crossterm::{
 use std::collections::VecDeque;
 use std::io::stdout;
 use std::process::Child;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -50,6 +50,8 @@ static SONG_QUEUE: RwLock<Vec<Track>> = RwLock::new(Vec::new());
 static RELATED_SONG_LIST: RwLock<Vec<(String, String)>> = RwLock::new(Vec::new());
 static RECENTLY_PLAYED: RwLock<VecDeque<Track>> = RwLock::new(VecDeque::new());
 const HISTORY_LIMIT: usize = 50;
+//TO KEEP CONSISTENT VOLUME LEVEL ACROSS TRACKS (TO BE READ BY player.rs)
+pub static VOLUME: AtomicI64 = AtomicI64::new(50);
 
 static VIEW_MODE: RwLock<String> = RwLock::new(String::new());
 static UI_MODE: AtomicUsize = AtomicUsize::new(0);
@@ -114,6 +116,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // PART 3 - INITIALIZATION
     // ----------------------------------------------------------------------------------
 
+    // -------------------------------------------------------------------
+    // RESTRICTION: ENFORCE MINIMUM TERMINAL SIZE
+    // -------------------------------------------------------------------
+    let min_width = 52;
+    let min_height = 36;
+
+    loop {
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((0, 0));
+
+        if cols >= min_width && rows >= min_height {
+            break;
+            execute!(stdout(), Clear(ClearType::All));
+        }
+        execute!(stdout(), Clear(ClearType::All));
+        println!("Breh Terminal too small!");
+        println!("Current: {}x{}", cols, rows);
+        println!("Required: {}x{}", min_width, min_height);
+        println!("Resize your window >_<");
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
     // ----------------------------------------------------------------------------------
     // CASE 1 : IF OFFLINE MODE INITIAL FETCH RANDOM SONG + POPULATE QUEUE
     // ----------------------------------------------------------------------------------
@@ -410,7 +433,10 @@ async fn handle_global_commands(
             return true;
         }
         s if s.chars().all(|c| c == '-' || c == '+') => {
-            let delta: i64 = s.chars().map(|c| if c == '+' { 1 } else { -1 }).sum();
+            let delta: i64 = s.chars().map(|c| if c == '+' { 5 } else { -5 }).sum();
+            let current = VOLUME.load(Ordering::Relaxed);
+            let new_vol = (current + delta).clamp(0, 150);
+            VOLUME.store(new_vol, Ordering::Relaxed);
             player::vol_change(delta);
             refresh_ui(None);
             return true;

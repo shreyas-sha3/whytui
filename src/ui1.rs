@@ -9,15 +9,23 @@ use crossterm::{
 use std::io::{Write, stdout};
 use std::sync::atomic::Ordering;
 
+use unicode_width::UnicodeWidthStr;
+
 const STATUS_LINE_ROW: u16 = 12;
-const QUEUE_SIZE: usize = 7;
+const QUEUE_SIZE: usize = 5;
 
 pub use crate::ui_common::{show_playlists, show_songs, stop_lyrics};
 
+fn get_visual_width(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
+
 pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], toggle: &str) {
     let mut stdout = stdout();
-    queue!(stdout, cursor::Hide, cursor::MoveTo(0, 0)).unwrap();
+    let (cols, _) = terminal::size().unwrap_or((80, 24));
+    let width_usize = cols as usize;
 
+    queue!(stdout, cursor::Hide, cursor::MoveTo(0, 0)).unwrap();
     queue!(stdout, Print(get_banner_art()), Print("\n\n")).unwrap();
 
     let header_text = if toggle == "recent" {
@@ -25,18 +33,22 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], toggle: &str) 
     } else {
         "queue"
     };
+
+    let raw_header = format!("¨˜ˆ”°⍣~•{}•~⍣°”ˆ˜¨", header_text);
+
+    let header_len = get_visual_width(&raw_header);
+    let header_pad = (width_usize.saturating_sub(header_len)) / 2;
+
     queue!(
         stdout,
-        Print(format!(
-            "\n\n\n\n{}\n",
-            format!("¨˜ˆ”°⍣~•{}•~⍣°”ˆ˜¨", header_text).cyan()
-        ))
+        cursor::MoveTo(header_pad as u16, 18),
+        Print(raw_header.cyan())
     )
     .unwrap();
 
     queue!(
         stdout,
-        cursor::MoveTo(0, 18),
+        cursor::MoveTo(0, 19),
         terminal::Clear(ClearType::FromCursorDown)
     )
     .unwrap();
@@ -44,23 +56,32 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], toggle: &str) 
     if !queue.is_empty() {
         for (i, name) in queue.iter().enumerate().take(QUEUE_SIZE) {
             let (title, _) = split_title_artist(&name);
+            let clean_name = blindly_trim(&title);
+
+            let display_str = format!("{}", clean_name);
+
+            let len = get_visual_width(&display_str);
+            let pad = (width_usize.saturating_sub(len)) / 2;
+
             queue!(
                 stdout,
-                Print(format!(
-                    "{}. {}\n",
-                    (i + 1).to_string().dimmed(),
-                    title.dimmed()
-                ))
+                cursor::MoveTo(pad as u16, 20 + i as u16),
+                Print(display_str.dimmed())
             )
             .unwrap();
         }
     } else {
-        queue!(stdout, Print("\t  ~\n")).unwrap();
+        let msg = "~";
+        let pad = (width_usize.saturating_sub(1)) / 2;
+        queue!(stdout, cursor::MoveTo(pad as u16, 20), Print(msg)).unwrap();
     }
+
+    let prompt_str = "> ";
 
     queue!(
         stdout,
-        Print(format!("\n\n{}", ">> ".bright_blue().bold())),
+        cursor::MoveTo(0, 20 + QUEUE_SIZE as u16 + 1),
+        Print(format!("{}", prompt_str.bright_blue().bold())),
         cursor::Hide
     )
     .unwrap();
@@ -94,10 +115,32 @@ fn draw_ui1_status(
     current_idx: usize,
 ) {
     let mut stdout = stdout();
-    let fmt = |s: f64| format!("{:02}:{:02}", (s / 60.0) as u64, (s % 60.0) as u64);
+    let (cols, _) = terminal::size().unwrap_or((80, 24));
+    let width_usize = cols as usize;
+
+    let fmt_time = |s: f64| format!("{:02}:{:02}", (s / 60.0) as u64, (s % 60.0) as u64);
+    let max_bar_width = 42;
+    let available_width = width_usize.saturating_sub(16);
+    let bar_width = std::cmp::min(available_width, max_bar_width);
+
+    let ratio = if tot > 0.0 { curr / tot } else { 0.0 };
+    let filled_len = (ratio * bar_width as f64).round() as usize;
+    let empty_len = bar_width.saturating_sub(filled_len);
+
+    let bar_str = format!(
+        "{}{}",
+        "━".repeat(filled_len).cyan(),
+        "─".repeat(empty_len).dimmed()
+    );
 
     let artist_scroll = get_scrolling_text(artist, 25);
     let title_display = format!("{} [{}]", title, artist_scroll.dimmed());
+
+    let title_visual_len = get_visual_width(title) + get_visual_width(&artist_scroll) + 5;
+    let title_pad = (width_usize.saturating_sub(title_visual_len)) / 2;
+
+    let total_bar_len = 12 + bar_width;
+    let bar_pad = (width_usize.saturating_sub(total_bar_len)) / 2;
 
     let current_text = if current_idx < lyrics.len() {
         &lyrics[current_idx].text
@@ -109,6 +152,12 @@ fn draw_ui1_status(
     } else {
         ""
     };
+
+    let curr_lyric_len = get_visual_width(current_text);
+    let next_lyric_len = get_visual_width(next_text);
+
+    let curr_lyric_pad = (width_usize.saturating_sub(curr_lyric_len)) / 2;
+    let next_lyric_pad = (width_usize.saturating_sub(next_lyric_len)) / 2;
 
     let current_display = if current_text.trim().is_empty() {
         "~".white().bold().blink().to_string()
@@ -124,21 +173,23 @@ fn draw_ui1_status(
         stdout,
         cursor::Hide,
         cursor::SavePosition,
-        cursor::MoveTo(0, STATUS_LINE_ROW),
+        cursor::MoveTo(title_pad as u16, STATUS_LINE_ROW),
+        terminal::Clear(ClearType::CurrentLine),
+        Print(format!("{} {}", "▶︎".cyan(), title_display.white().bold())),
+        cursor::MoveTo(bar_pad as u16, STATUS_LINE_ROW + 1),
         terminal::Clear(ClearType::CurrentLine),
         Print(format!(
-            "[{} / {}] {}{: <80}",
-            fmt(curr).cyan(),
-            fmt(tot).cyan(),
-            title_display.white().bold(),
-            ""
+            "{} {} {}",
+            fmt_time(curr).cyan(),
+            bar_str,
+            fmt_time(tot).cyan()
         )),
-        cursor::MoveTo(0, STATUS_LINE_ROW + 2),
+        cursor::MoveTo(curr_lyric_pad as u16, STATUS_LINE_ROW + 3),
         terminal::Clear(ClearType::CurrentLine),
-        Print(format!("{: <85}", current_display)),
-        cursor::MoveTo(0, STATUS_LINE_ROW + 3),
+        Print(current_display),
+        cursor::MoveTo(next_lyric_pad as u16, STATUS_LINE_ROW + 4),
         terminal::Clear(ClearType::CurrentLine),
-        Print(format!("{: <80}", next_text.dimmed().italic())),
+        Print(next_text.dimmed().italic()),
         cursor::RestorePosition,
         cursor::Hide
     )

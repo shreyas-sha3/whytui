@@ -27,44 +27,37 @@ pub fn stop_lyrics() {
 }
 
 pub fn get_banner_art() -> String {
-    format!(
-        "{}",
-        r#"
- █     █░ ██░ ██▓ ██   ██▓ ▄███████▓ █    ██  ██▓
-▓█░ █ ░█░▓██░ ██▒ ▒██  ██▒▓   ██▒ ▓▒ ██  ▓██ ▒▓██▒
-▒█░ █ ░█ ▒██▀▀██░  ▒██ ██░▒  ▓██░ ▒░▓██  ▒██ ░▒██▒
-░█░ █ ░█ ░▓█ ░██   ░ ▐██▓░░  ▓██▓ ░ ▓▓█  ░██ ░░██░
-░░██▒██▓ ░▓█▒░██▓  ░ ██▒▓░   ▒██▒ ░ ▒▒█████▓  ░██░
-░ ▓░▒ ▒   ▒ ░░▒░▒   ██▒▒▒    ▒ ░░   ░▒▓▒ ▒ ▒  ░▓
-  ▒ ░ ░   ▒ ░▒░ ░ ▓██ ░▒░      ░    ░░▒░ ░ ░   ▒ ░
-  ░   ░   ░  ░░ ░ ▒ ▒ ░░     ░       ░░░ ░  ░  ▒ ░
+    let art = r#"
+   █     █░ ██░ ██▓ ██   ██▓ ▄███████▓ █    ██  ██▓
+  ▓█░ █ ░█░▓██░ ██▒ ▒██  ██▒▓   ██▒ ▓▒ ██  ▓██ ▒▓██▒
+  ▒█░ █ ░█ ▒██▀▀██░  ▒██ ██░▒  ▓██░ ▒░▓██  ▒██ ░▒██▒
+  ░█░ █ ░█ ░▓█ ░██   ░ ▐██▓░░  ▓██▓ ░ ▓▓█  ░██ ░░██░
+  ░░██▒██▓ ░▓█▒░██▓  ░ ██▒▓░   ▒██▒ ░ ▒▒█████▓  ░██░
+  ░ ▓░▒ ▒   ▒ ░░▒░▒   ██▒▒▒    ▒ ░░   ░▒▓▒ ▒ ▒  ░▓
+    ▒ ░ ░   ▒ ░▒░ ░ ▓██ ░▒░      ░    ░░▒░ ░ ░   ▒ ░
+    ░   ░   ░  ░░ ░ ▒ ▒ ░░     ░       ░░░ ░  ░  ▒ ░
     ░     ░  ░  ░ ░ ░                  ░       ░
                 ░  ░
-"#
-        .blue()
-        .dimmed()
-    )
+"#;
+
+    let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
+    let width = cols as usize;
+
+    let art_width = 54;
+    let padding = width.saturating_sub(art_width) / 2;
+    let pad_str = " ".repeat(padding);
+
+    let centered = art
+        .lines()
+        .map(|line| format!("{}{}", pad_str, line))
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    centered.blue().dimmed().to_string()
 }
 
 pub fn dur_to_secs(d: Duration) -> f64 {
     d.as_millis() as f64 / 1000.0
-}
-
-pub fn truncate_safe(s: &str, max_width: usize) -> String {
-    if s.len() <= max_width {
-        return s.to_string();
-    }
-    let mut result = String::new();
-    let mut width = 0;
-    for c in s.chars() {
-        if width >= max_width.saturating_sub(3) {
-            result.push_str("...");
-            break;
-        }
-        result.push(c);
-        width += 1;
-    }
-    result
 }
 
 pub fn get_scrolling_text(text: &str, width: usize) -> String {
@@ -141,15 +134,6 @@ where
     {
         let mut w = LYRICS.write().unwrap();
         w.clear();
-        let msg = if name != "Nothing Playing" {
-            "Searching Lyrics..."
-        } else {
-            "Waiting..."
-        };
-        w.push(LrcLine {
-            timestamp: Duration::from_secs(0),
-            text: msg.dimmed().to_string(),
-        });
     }
 
     if name != "Nothing Playing" {
@@ -165,7 +149,7 @@ where
                 _ => {
                     *w = vec![LrcLine {
                         timestamp: Duration::from_secs(0),
-                        text: "No lyrics found".dimmed().to_string(),
+                        text: "\t >_<".dimmed().to_string(),
                     }]
                 }
             }
@@ -196,4 +180,88 @@ where
     });
 
     stop
+}
+
+pub fn get_visual_width(s: &str) -> usize {
+    s.chars()
+        .map(|c| if c.len_utf8() > 1 { 2 } else { 1 })
+        .sum()
+}
+
+pub fn truncate_safe(s: &str, max_width: usize) -> String {
+    if get_visual_width(s) <= max_width {
+        return s.to_string();
+    }
+    let mut result = String::new();
+    let mut width = 0;
+    for c in s.chars() {
+        let w = if c.len_utf8() > 1 { 2 } else { 1 };
+        if width + w > max_width.saturating_sub(3) {
+            result.push_str("...");
+            break;
+        }
+        result.push(c);
+        width += w;
+    }
+    result
+}
+
+pub fn blindly_trim(text: &str) -> &str {
+    let first = text
+        .split(|c| c == '-' || c == '(' || c == '[' || c == '_')
+        .next()
+        .unwrap_or("");
+    first
+}
+
+pub fn word_wrap_cjk(text: &str, max_width: usize) -> Vec<String> {
+    if text.trim().is_empty() {
+        return vec!["".to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    let mut current_width = 0;
+
+    let word_visual_width = |w: &str| -> usize {
+        w.chars()
+            .map(|c| if c.len_utf8() > 1 { 2 } else { 1 })
+            .sum()
+    };
+
+    for word in text.split_whitespace() {
+        let w_len = word_visual_width(word);
+        if current_width + w_len + (if current_width > 0 { 1 } else { 0 }) <= max_width {
+            if current_width > 0 {
+                current_line.push(' ');
+                current_width += 1;
+            }
+            current_line.push_str(word);
+            current_width += w_len;
+        } else {
+            if !current_line.is_empty() {
+                lines.push(current_line);
+            }
+            if w_len > max_width {
+                current_line = String::new();
+                current_width = 0;
+                for c in word.chars() {
+                    let c_width = if c.len_utf8() > 1 { 2 } else { 1 };
+                    if current_width + c_width > max_width {
+                        lines.push(current_line);
+                        current_line = String::new();
+                        current_width = 0;
+                    }
+                    current_line.push(c);
+                    current_width += c_width;
+                }
+            } else {
+                current_line = word.to_string();
+                current_width = w_len;
+            }
+        }
+    }
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+    lines
 }

@@ -11,10 +11,13 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-pub use crate::ui_common::{show_playlists, show_songs, stop_lyrics};
+pub use crate::ui_common::{
+    blindly_trim, get_scrolling_text, get_visual_width, show_playlists, show_songs, stop_lyrics,
+    truncate_safe, word_wrap_cjk,
+};
 
-static LOCAL_TITLE_SCROLL: RwLock<usize> = RwLock::new(0);
-static LOCAL_TITLE_LAST: RwLock<Option<Instant>> = RwLock::new(None);
+// static LOCAL_TITLE_SCROLL: RwLock<usize> = RwLock::new(0);
+// static LOCAL_TITLE_LAST: RwLock<Option<Instant>> = RwLock::new(None);
 
 pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], _toggle: &str) {
     let mut stdout = stdout();
@@ -101,7 +104,7 @@ fn draw_minimal_ui(
 
     queue!(stdout, cursor::Hide, cursor::SavePosition).unwrap();
 
-    let title_scroll = get_local_scrolling_text(title, width_usize.saturating_sub(4));
+    let title_scroll = get_scrolling_text(title, width_usize.saturating_sub(4));
 
     let artist_scroll = crate::ui_common::get_scrolling_text(artist, width_usize.saturating_sub(4));
 
@@ -230,113 +233,4 @@ fn draw_minimal_ui(
 
     queue!(stdout, cursor::RestorePosition, cursor::Hide).unwrap();
     stdout.flush().unwrap();
-}
-
-fn get_local_scrolling_text(text: &str, width: usize) -> String {
-    if get_visual_width(text) <= width {
-        return text.to_string();
-    }
-
-    let mut scroll = LOCAL_TITLE_SCROLL.write().unwrap();
-    let mut last_lock = LOCAL_TITLE_LAST.write().unwrap();
-    let now = Instant::now();
-
-    if last_lock.is_none() {
-        *last_lock = Some(now);
-    }
-
-    if now.duration_since(last_lock.unwrap()) >= Duration::from_millis(300) {
-        *scroll = (*scroll + 1) % (text.chars().count() + 2);
-        *last_lock = Some(now);
-    }
-
-    let padded = format!("{}  {}", text, text);
-    let chars: Vec<char> = padded.chars().collect();
-    let start = *scroll % chars.len();
-
-    chars.iter().cycle().skip(start).take(width).collect()
-}
-
-fn get_visual_width(s: &str) -> usize {
-    s.chars()
-        .map(|c| if c.len_utf8() > 1 { 2 } else { 1 })
-        .sum()
-}
-
-fn truncate_safe(s: &str, max_width: usize) -> String {
-    if get_visual_width(s) <= max_width {
-        return s.to_string();
-    }
-    let mut result = String::new();
-    let mut width = 0;
-    for c in s.chars() {
-        let w = if c.len_utf8() > 1 { 2 } else { 1 };
-        if width + w > max_width.saturating_sub(3) {
-            result.push_str("...");
-            break;
-        }
-        result.push(c);
-        width += w;
-    }
-    result
-}
-
-fn blindly_trim(text: &str) -> &str {
-    let first = text
-        .split(|c| c == '-' || c == '(' || c == '[' || c == '_')
-        .next()
-        .unwrap_or("");
-    first
-}
-
-fn word_wrap_cjk(text: &str, max_width: usize) -> Vec<String> {
-    if text.trim().is_empty() {
-        return vec!["".to_string()];
-    }
-    let mut lines = Vec::new();
-    let mut current_line = String::new();
-    let mut current_width = 0;
-
-    let word_visual_width = |w: &str| -> usize {
-        w.chars()
-            .map(|c| if c.len_utf8() > 1 { 2 } else { 1 })
-            .sum()
-    };
-
-    for word in text.split_whitespace() {
-        let w_len = word_visual_width(word);
-        if current_width + w_len + (if current_width > 0 { 1 } else { 0 }) <= max_width {
-            if current_width > 0 {
-                current_line.push(' ');
-                current_width += 1;
-            }
-            current_line.push_str(word);
-            current_width += w_len;
-        } else {
-            if !current_line.is_empty() {
-                lines.push(current_line);
-            }
-            if w_len > max_width {
-                current_line = String::new();
-                current_width = 0;
-                for c in word.chars() {
-                    let c_width = if c.len_utf8() > 1 { 2 } else { 1 };
-                    if current_width + c_width > max_width {
-                        lines.push(current_line);
-                        current_line = String::new();
-                        current_width = 0;
-                    }
-                    current_line.push(c);
-                    current_width += c_width;
-                }
-            } else {
-                current_line = word.to_string();
-                current_width = w_len;
-            }
-        }
-    }
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-    lines
 }

@@ -9,66 +9,95 @@ use crossterm::{
 use std::io::{Write, stdout};
 use std::sync::atomic::Ordering;
 
+use unicode_width::UnicodeWidthStr;
+
 const PROGRESS_ROW: u16 = 12;
-const CONTENT_START_ROW: u16 = 15;
-const LYRIC_COLUMN: u16 = 32;
-const QUEUE_SIZE: usize = 7;
-const PROMPT_ROW: u16 = CONTENT_START_ROW + (QUEUE_SIZE as u16) + 2;
+const CONTENT_START_ROW: u16 = 17;
+const QUEUE_SIZE: usize = 5;
+const PROMPT_ROW: u16 = CONTENT_START_ROW + (QUEUE_SIZE as u16) + 1;
 
 pub use crate::ui_common::{show_playlists, show_songs, stop_lyrics};
 
+fn get_visual_width(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
+
 pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], toggle: &str) {
     let mut stdout = stdout();
-    queue!(stdout, cursor::Hide, cursor::MoveTo(0, 0)).unwrap();
+    let (term_cols, _) = terminal::size().unwrap_or((80, 24));
 
+    let split_col = term_cols / 2;
+
+    let left_center_x = split_col / 2;
+    let right_width = term_cols - split_col;
+    let right_center_x = split_col + (right_width / 2);
+
+    queue!(stdout, cursor::Hide, cursor::MoveTo(0, 0)).unwrap();
     queue!(stdout, Print(get_banner_art())).unwrap();
 
-    let queue_header = if toggle == "recent" {
-        "RECENT"
+    let queue_header_txt = if toggle == "recent" {
+        "recent"
     } else {
-        "QUEUE"
+        "queue"
     };
+    let q_header_str = format!("¨˜ˆ”°⍣~•{}•~⍣°”ˆ˜¨", queue_header_txt);
+    let l_header_str = " ¨˜ˆ”°⍣~•lyrics•~⍣°”ˆ˜¨";
+
+    let l_len = get_visual_width(l_header_str) as u16;
+    let l_pos = left_center_x.saturating_sub(l_len / 2);
     queue!(
         stdout,
-        cursor::MoveTo(0, CONTENT_START_ROW - 1),
-        Print(
-            format!("¨˜ˆ”°⍣~•{}•~⍣°”ˆ˜¨", queue_header)
-                .bright_cyan()
-                .bold()
-                .dimmed()
-        )
+        cursor::MoveTo(l_pos, CONTENT_START_ROW - 1),
+        Print(l_header_str.cyan().bold().dimmed())
     )
     .unwrap();
 
+    let q_len = get_visual_width(&q_header_str) as u16;
+    let q_pos = right_center_x.saturating_sub(q_len / 2);
     queue!(
         stdout,
-        cursor::MoveTo(LYRIC_COLUMN, CONTENT_START_ROW - 1),
-        Print(" ¨˜ˆ”°⍣~•LYRICS•~⍣°”ˆ˜¨".cyan().bold().dimmed())
+        cursor::MoveTo(q_pos, CONTENT_START_ROW - 1),
+        Print(q_header_str.bright_cyan().bold().dimmed())
     )
     .unwrap();
 
     for i in 0..QUEUE_SIZE {
         queue!(
             stdout,
-            cursor::MoveTo(0, CONTENT_START_ROW + (i as u16) + 1),
+            cursor::MoveTo(split_col, CONTENT_START_ROW + (i as u16)),
             terminal::Clear(ClearType::UntilNewLine)
         )
         .unwrap();
+
         if i < queue.len() {
             let (clean_name, _) = split_title_artist(&queue[i]);
-            let max_len = (LYRIC_COLUMN as usize).saturating_sub(5);
+
+            let max_len = (right_width as usize).saturating_sub(2);
+
+            let clean_name = blindly_trim(&clean_name);
             let safe_name = truncate_safe(&clean_name, max_len);
 
-            let display_str = format!("{}. {}", i + 1, safe_name);
+            let display_str = format!("{}", safe_name);
+
+            let display_len = get_visual_width(&display_str) as u16;
+
+            let final_x = right_center_x.saturating_sub(display_len / 2);
+
             let styled = match i {
                 0 => display_str.truecolor(255, 255, 255).bold(),
-                1 => display_str.truecolor(220, 220, 220),
-                2 => display_str.truecolor(180, 180, 180),
+                1 => display_str.truecolor(180, 180, 180),
+                2 => display_str.truecolor(160, 160, 160),
+                3 => display_str.truecolor(140, 140, 140),
+                4 => display_str.truecolor(120, 120, 120),
                 _ => display_str.truecolor(100, 100, 100),
             };
-            queue!(stdout, Print(styled)).unwrap();
-        } else {
-            queue!(stdout, Print(" ")).unwrap();
+
+            queue!(
+                stdout,
+                cursor::MoveTo(final_x, CONTENT_START_ROW + (i as u16)),
+                Print(styled)
+            )
+            .unwrap();
         }
     }
 
@@ -77,7 +106,7 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], toggle: &str) 
         cursor::MoveTo(0, PROMPT_ROW),
         terminal::Clear(ClearType::CurrentLine),
         terminal::Clear(ClearType::FromCursorDown),
-        Print("> Search / Command: ".bright_blue().bold()),
+        Print("> ".bright_blue().bold()),
         cursor::Show
     )
     .unwrap();
@@ -111,29 +140,64 @@ fn draw_ui2_status(
     current_idx: usize,
 ) {
     let mut stdout = stdout();
-    let fmt = |s: f64| format!("{:02}:{:02}", (s / 60.0) as u64, (s % 60.0) as u64);
     let (term_cols, _) = terminal::size().unwrap_or((80, 24));
-    let max_lyric_width = (term_cols.saturating_sub(LYRIC_COLUMN) as usize).saturating_sub(2);
+    let width_usize = term_cols as usize;
+
+    let split_col = term_cols / 2;
+    let left_center_x = split_col / 2;
+
+    let lyric_area_width = split_col as usize;
+
+    let max_lyric_width = lyric_area_width.saturating_sub(1);
 
     let artist_scroll = get_scrolling_text(artist, 25);
     let display_title = truncate_safe(title, 35);
+
+    let fmt_time = |s: f64| format!("{:02}:{:02}", (s / 60.0) as u64, (s % 60.0) as u64);
+    let max_bar_width = 42;
+    let available_width = width_usize.saturating_sub(16);
+    let bar_width = std::cmp::min(available_width, max_bar_width);
+
+    let total_bar_len = 12 + bar_width;
+    let bar_pad = (width_usize.saturating_sub(total_bar_len)) / 2;
+
+    let title_visual_len = get_visual_width(&display_title) + get_visual_width(&artist_scroll) + 6;
+    let title_pad = (width_usize.saturating_sub(title_visual_len)) / 2;
+
+    let ratio = if tot > 0.0 { curr / tot } else { 0.0 };
+    let filled_len = (ratio * bar_width as f64).round() as usize;
+    let empty_len = bar_width.saturating_sub(filled_len);
+
+    let bar_str = format!(
+        "{}{}",
+        "━".repeat(filled_len).cyan(),
+        "─".repeat(empty_len).dimmed()
+    );
 
     queue!(
         stdout,
         cursor::Hide,
         cursor::SavePosition,
-        cursor::MoveTo(0, PROGRESS_ROW),
+        cursor::MoveTo(title_pad as u16, PROGRESS_ROW),
         terminal::Clear(ClearType::CurrentLine),
         Print(format!(
-            "{} [{} / {}] {} [{}]",
+            "{} {} [{}]",
             "▶︎".cyan(),
-            fmt(curr).cyan(),
-            fmt(tot).cyan(),
             display_title.white().bold(),
             artist_scroll.dimmed().italic()
+        )),
+        cursor::MoveTo(bar_pad as u16, PROGRESS_ROW + 1),
+        terminal::Clear(ClearType::CurrentLine),
+        Print(format!(
+            "{} {} {}",
+            fmt_time(curr).cyan(),
+            bar_str,
+            fmt_time(tot).cyan()
         ))
     )
     .unwrap();
+
+    let cleaner = " ".repeat(lyric_area_width);
 
     if max_lyric_width > 5 {
         for offset in 0..7 {
@@ -145,17 +209,25 @@ fn draw_ui2_status(
             };
 
             let safe_text = truncate_safe(text, max_lyric_width);
+
+            let len = get_visual_width(&safe_text) as u16;
+
+            let final_x = left_center_x.saturating_sub(len / 2);
+
             let styled = match offset {
-                0 => safe_text.white().bold(),
-                1 => safe_text.truecolor(200, 200, 200),
-                2 => safe_text.truecolor(150, 150, 150),
+                0 => safe_text.truecolor(255, 255, 255).bold(),
+                1 => safe_text.truecolor(180, 180, 180),
+                2 => safe_text.truecolor(160, 160, 160),
+                3 => safe_text.truecolor(140, 140, 140),
+                4 => safe_text.truecolor(120, 120, 120),
                 _ => safe_text.truecolor(100, 100, 100),
             };
 
             queue!(
                 stdout,
-                cursor::MoveTo(LYRIC_COLUMN, CONTENT_START_ROW + offset as u16 + 1),
-                terminal::Clear(ClearType::UntilNewLine),
+                cursor::MoveTo(0, CONTENT_START_ROW + offset as u16),
+                Print(&cleaner),
+                cursor::MoveTo(final_x, CONTENT_START_ROW + offset as u16),
                 Print(styled)
             )
             .unwrap();
