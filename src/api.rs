@@ -610,7 +610,7 @@ pub async fn fetch_synced_lyrics(
     let client = reqwest::Client::new();
 
     let mut search_urls = Vec::new();
-
+    //Akale (From "9 (Nine) Malayalam")
     let first_artist = artist.split(',').next().unwrap_or(&artist).trim();
     search_urls.push(format!(
         "https://lrclib.net/api/search?track_name={}&artist_name={}&duration={}",

@@ -139,6 +139,7 @@ where
             let result = fetch_synced_lyrics(&song_name, duration_secs).await;
 
             if *CURRENT_LYRIC_SONG.read().unwrap() != song_name {
+                LYRICS.write().unwrap().clear();
                 return;
             }
             let mut w = LYRICS.write().unwrap();
@@ -206,7 +207,7 @@ pub fn truncate_safe(s: &str, max_width: usize) -> String {
 
 pub fn blindly_trim(text: &str) -> &str {
     let first = text
-        .split(|c| c == '-' || c == '(' || c == '[' || c == '_')
+        .split(|c| c == '-' || c == '(' || c == '[' || c == '_' || c == '|')
         .next()
         .unwrap_or("");
     first

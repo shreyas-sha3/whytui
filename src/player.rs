@@ -5,6 +5,10 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 pub fn prepare_music_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let mut d = dirs::audio_dir().ok_or("No audio dir")?;
     d.push("whytui");
@@ -53,22 +57,42 @@ pub fn play_file(
 
 pub fn stop_process(proc: &mut Option<Child>, song_name: &str, music_dir: &PathBuf) {
     if let Some(mut child) = proc.take() {
+        //kill for Linux/Mac
         let _ = child.kill();
         let _ = child.wait();
+
+        #[cfg(target_os = "windows")]
+        {
+            let _ = Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &child.id().to_string()])
+                .creation_flags(0x08000000)
+                .output();
+        }
     }
-    if !song_name.is_empty() {
-        let temp = music_dir.join("temp").join(format!("{}.webm", song_name));
-        if temp.exists() {
-            std::fs::remove_file(temp).ok();
+
+    clear_temp(music_dir);
+}
+
+pub fn clear_temp(music_dir: &PathBuf) {
+    let temp_dir = music_dir.join("temp");
+    //clear all files in temp
+    if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.is_file() {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
         }
     }
 }
 
 pub fn get_ipc_path() -> String {
     if cfg!(unix) {
-        "/tmp/ytcli.sock".to_string()
+        "/tmp/whytui.sock".to_string()
     } else {
-        r"\\.\pipe\ytcli.sock".to_string()
+        r"\\.\pipe\whytui.sock".to_string()
     }
 }
 

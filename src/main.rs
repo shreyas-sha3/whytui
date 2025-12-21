@@ -168,7 +168,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     // ----------------------------------------------------------------------------------
-    // CASE 2 : IF ONLINCE MODE TRY TO CONNECT TO API AND FETCH USERNAME
+    // CASE 2 : IF ONLINE MODE TRY TO CONNECT TO API AND FETCH USERNAME
     // ----------------------------------------------------------------------------------
     else {
         let user_status = yt_client
@@ -210,6 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // -------------------------------------------------------------------
                 // CASE 1 : A SONG IS CURRENTLY BEING PLAYED
                 // -------------------------------------------------------------------
+                ui_common::stop_lyrics(); // stop display of lyrics
                 if let Some(track) = &current_track {
                     let temp = music_dir.join("temp").join(format!("{}.webm", track.title));
                     let full = music_dir.join(format!("{}.webm", track.title));
@@ -399,6 +400,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 use std::path::PathBuf;
+
 async fn handle_global_commands(
     input: &str,
     rx: &std::sync::mpsc::Receiver<String>, //to give to library
@@ -408,7 +410,9 @@ async fn handle_global_commands(
     music_dir: &std::path::PathBuf,
     config: &AppConfig,
 ) -> bool {
-    let title_ref = current_track.as_ref().map(|t| t.title.as_str());
+    let title_ref = current_track.as_ref().map(|t| t.title.as_str()); //now playing song title to pass to refresh_ui
+    let current_mode = UI_MODE.load(Ordering::Relaxed); //current ui mode
+
     // Seek check
     if input.starts_with('>') || input.starts_with('<') {
         if let Ok(s) = input[1..].trim().parse::<i64>() {
@@ -488,23 +492,17 @@ async fn handle_global_commands(
             return true;
         }
         "r" | "romanize" => {
+            ui_common::stop_lyrics();
+
             let current = ROMANIZE.load(Ordering::Relaxed);
             ROMANIZE.store(!current, Ordering::Relaxed);
             execute!(stdout(), Clear(ClearType::All));
-
             refresh_ui(title_ref);
             return true;
         }
         //toggle between the ui modes
         "v" | "view" => {
-            let current_mode = UI_MODE.load(Ordering::Relaxed);
-
-            match current_mode {
-                0 => ui1::stop_lyrics(),
-                1 => ui2::stop_lyrics(),
-                2 => ui3::stop_lyrics(),
-                _ => {}
-            }
+            ui_common::stop_lyrics();
 
             let next_ui_mode = (current_mode + 1) % 3;
             UI_MODE.store(next_ui_mode, Ordering::Relaxed);
@@ -594,6 +592,13 @@ async fn handle_global_commands(
                 refresh_ui(None);
                 return true;
             }
+
+            let ui_mode = UI_MODE.load(Ordering::Relaxed);
+            if ui_mode == 2 {
+                refresh_ui(None);
+                return true;
+            }
+
             //give rx to library helper
             if let Err(e) = handle_library_browsing(
                 rx,
