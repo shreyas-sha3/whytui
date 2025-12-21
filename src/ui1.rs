@@ -134,9 +134,12 @@ fn draw_ui1_status(
     );
 
     let artist_scroll = get_scrolling_text(artist, 25);
-    let title_display = format!("{} [{}]", title, artist_scroll.dimmed());
+    let trimmed_title = blindly_trim(&title);
+    let truncated_title = truncate_safe(trimmed_title, 35);
+    let final_title = format!("{} [{}]", truncated_title, artist_scroll.dimmed());
 
-    let title_visual_len = get_visual_width(title) + get_visual_width(&artist_scroll) + 5;
+    let title_visual_len =
+        get_visual_width(&truncated_title) + get_visual_width(&artist_scroll) + 5;
     let title_pad = (width_usize.saturating_sub(title_visual_len)) / 2;
 
     let total_bar_len = 12 + bar_width;
@@ -175,7 +178,7 @@ fn draw_ui1_status(
         cursor::SavePosition,
         cursor::MoveTo(title_pad as u16, STATUS_LINE_ROW),
         terminal::Clear(ClearType::CurrentLine),
-        Print(format!("{} {}", "▶︎".cyan(), title_display.white().bold())),
+        Print(format!("{} {}", "▶︎".cyan(), final_title.white().bold())),
         cursor::MoveTo(bar_pad as u16, STATUS_LINE_ROW + 1),
         terminal::Clear(ClearType::CurrentLine),
         Print(format!(

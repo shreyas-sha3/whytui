@@ -131,15 +131,13 @@ where
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
 
-    {
-        let mut w = LYRICS.write().unwrap();
-        w.clear();
-    }
-
     if name != "Nothing Playing" {
         let song_name = name.clone();
         tokio::spawn(async move {
-            let result = fetch_synced_lyrics(&song_name).await;
+            let (_, tot) = player::get_time_info().unwrap_or((0.0, 0.0));
+            let duration_secs = tot as u32;
+            let result = fetch_synced_lyrics(&song_name, duration_secs).await;
+
             if *CURRENT_LYRIC_SONG.read().unwrap() != song_name {
                 return;
             }
@@ -149,7 +147,7 @@ where
                 _ => {
                     *w = vec![LrcLine {
                         timestamp: Duration::from_secs(0),
-                        text: "\t >_<".dimmed().to_string(),
+                        text: ">_<".dimmed().to_string(),
                     }]
                 }
             }
@@ -166,7 +164,7 @@ where
 
             for (i, l) in lyrics.iter().enumerate() {
                 let ts = dur_to_secs(l.timestamp);
-                if curr + 0.29 >= ts {
+                if curr + 0.249 >= ts {
                     current_idx = i;
                 } else {
                     break;

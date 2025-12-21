@@ -12,6 +12,9 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::ROMANIZE;
+use std::sync::atomic::Ordering;
+
 #[derive(Debug, Clone)]
 pub struct SongDetails {
     pub title: String,
@@ -462,7 +465,7 @@ impl YTMusic {
                         let mut found_current = false;
 
                         for item in contents {
-                            // 1. UNWRAP LOGIC: Check if it's a Standard Item or a Wrapper
+
                             let data = if let Some(renderer) = item.pointer("/playlistPanelVideoRenderer") {
                                 Some(renderer)
                             } else if let Some(renderer) = item.pointer("/playlistPanelVideoWrapperRenderer/primaryRenderer/playlistPanelVideoRenderer") {
@@ -472,25 +475,14 @@ impl YTMusic {
                             };
 
                             if let Some(r) = data {
-                                // 2. Extract ID and Selection Status
+
                                 let item_id = r.pointer("/videoId").and_then(|v| v.as_str()).unwrap_or("");
                                 let is_selected = r.pointer("/selected").and_then(|v| v.as_bool()).unwrap_or(false);
-
-                                // 3. CHECK MATCH
-                                // If this is the current song (by ID or by 'selected' flag)
                                 if is_selected || (item_id == video_id && !found_current) {
                                     found_current = true;
-                                    continue; // Skip the current song, we want what comes NEXT
+                                    continue;
                                 }
-
-                                // 4. ADD NEXT SONGS
                                 if found_current {
-                                    // We reuse the specific renderer 'r' to parse details
-                                    // Note: We need to pass the *whole item* structure to parse_queue_item usually,
-                                    // but since we unwrapped 'r', let's manually extract fields or reconstruct slightly.
-                                    // EASIER APPROACH: Since parse_queue_item expects the whole JSON object,
-                                    // let's just re-use the extraction logic here inline to be safe with the wrapper.
-
                                     let title = r.pointer("/title/runs/0/text").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
                                     let duration = r.pointer("/lengthText/runs/0/text").and_then(|v| v.as_str()).map(parse_duration).unwrap_or("0:00".to_string());
                                     let artist = r.pointer("/shortBylineText/runs/0/text").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
@@ -596,18 +588,43 @@ pub fn split_title_artist(input: &str) -> (String, String) {
     }
     (input.trim().to_string(), String::new())
 }
+
+fn duration_param(duration_secs: Option<u32>) -> String {
+    duration_secs
+        .map(|d| format!("&duration={}", d))
+        .unwrap_or_default()
+}
+pub fn blindly_trim(text: &str) -> &str {
+    let first = text
+        .split(|c| c == '-' || c == '(' || c == '[' || c == '_')
+        .next()
+        .unwrap_or("");
+    first
+}
 pub async fn fetch_synced_lyrics(
     title_artist: &str,
+    duration_secs: u32,
 ) -> Result<Vec<LrcLine>, Box<dyn std::error::Error + Send + Sync>> {
     let (title, artist) = split_title_artist(title_artist);
+
     let client = reqwest::Client::new();
+
     let mut search_urls = Vec::new();
 
+    let first_artist = artist.split(',').next().unwrap_or(&artist).trim();
     search_urls.push(format!(
-        "https://lrclib.net/api/search?track_name={}&artist_name={}",
+        "https://lrclib.net/api/search?track_name={}&artist_name={}&duration={}",
         urlencoding::encode(&title),
-        urlencoding::encode(&artist)
+        urlencoding::encode(&first_artist),
+        duration_secs
     ));
+
+    let clean_title = blindly_trim(&title);
+    search_urls.push(format!(
+        "https://lrclib.net/api/search?track_name={}",
+        urlencoding::encode(clean_title)
+    ));
+
     search_urls.push(format!(
         "https://lrclib.net/api/search?q={}",
         urlencoding::encode(title_artist)
@@ -615,14 +632,22 @@ pub async fn fetch_synced_lyrics(
 
     for url in search_urls {
         if let Ok(resp) = client.get(&url).send().await {
-            if resp.status().is_success() {
-                if let Ok(json) = resp.json::<Value>().await {
-                    if let Some(arr) = json.as_array() {
-                        for entry in arr {
-                            if let Some(sync) = entry["syncedLyrics"].as_str() {
-                                if !sync.trim().is_empty() {
-                                    return Ok(parse_lrc(sync));
+            if !resp.status().is_success() {
+                continue;
+            }
+
+            if let Ok(json) = resp.json::<Value>().await {
+                if let Some(arr) = json.as_array() {
+                    for entry in arr {
+                        if let Some(sync) = entry["syncedLyrics"].as_str() {
+                            if !sync.trim().is_empty() {
+                                let mut lines = parse_lrc(sync);
+
+                                if ROMANIZE.load(Ordering::Relaxed) && !is_mostly_english(&lines) {
+                                    let _ = romanize_lyrics_google(&client, &mut lines).await;
                                 }
+
+                                return Ok(lines);
                             }
                         }
                     }
@@ -630,7 +655,90 @@ pub async fn fetch_synced_lyrics(
             }
         }
     }
+
     Err("No synced lyrics available".into())
+}
+
+fn is_mostly_english(lines: &[LrcLine]) -> bool {
+    let mut total_chars = 0;
+    let mut non_ascii_chars = 0;
+
+    for line in lines {
+        for c in line.text.chars() {
+            if !c.is_whitespace() {
+                total_chars += 1;
+                if !c.is_ascii() {
+                    non_ascii_chars += 1;
+                }
+            }
+        }
+    }
+
+    if total_chars == 0 {
+        return true;
+    }
+
+    (non_ascii_chars as f64 / total_chars as f64) < 0.15
+}
+
+async fn romanize_lyrics_google(
+    client: &Client,
+    lines: &mut Vec<LrcLine>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for chunk in lines.chunks_mut(40) {
+        let delimiter = " / ";
+
+        let full_text: String = chunk
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<&str>>()
+            .join(delimiter);
+
+        if full_text.trim().is_empty() {
+            continue;
+        }
+
+        let url = "https://translate.googleapis.com/translate_a/single";
+
+        let params = vec![
+            ("client", "gtx"),
+            ("sl", "auto"),
+            ("tl", "en"),
+            ("dt", "t"),
+            ("dt", "rm"),
+            ("q", &full_text),
+        ];
+
+        let resp = client.get(url).query(&params).send().await?;
+
+        if resp.status().is_success() {
+            let json: Value = resp.json().await?;
+
+            let romanized_blob = json
+                .get(0)
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.last())
+                .and_then(|item| item.get(3))
+                .and_then(|v| v.as_str());
+
+            if let Some(text) = romanized_blob {
+                let parts: Vec<&str> = text.split('/').map(|s| s.trim()).collect();
+
+                if parts.len() > 1 {
+                    for (i, line_obj) in chunk.iter_mut().enumerate() {
+                        if let Some(part) = parts.get(i) {
+                            let trimmed = part.trim();
+
+                            if !trimmed.is_empty() {
+                                line_obj.text = trimmed.to_string();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn parse_lrc(lrc: &str) -> Vec<LrcLine> {

@@ -37,10 +37,10 @@ curl -L -o whytui https://github.com/shreyas-sha3/whytui/releases/download/Lates
 ```bash
 winget install mpv
 ```
-[oneliner for cmd as administrator]
 ```bash
 curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/download/Latest/whytui-win-x86_64.exe && move whytui.exe C:\Windows\
 ```
+[oneliner for cmd as administrator]
  
 ## Usage
 
@@ -61,6 +61,7 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
   * `p | prev`  → play previous song in the queue
   * `t`  → toggle queue and recently played
   * `< / >`   → seek song in seconds (e.g., `>10` to seek 10 seconds forward)
+  * `r | romanize`  → romanize/de-romanize (true by default)
   * `c | clear`  → clear the queue
   * `L | library` → show ytmusic playlists
   * `l | like` → add currently playing song to liked songs

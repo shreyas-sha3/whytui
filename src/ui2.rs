@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 
 const PROGRESS_ROW: u16 = 12;
 const CONTENT_START_ROW: u16 = 17;
-const QUEUE_SIZE: usize = 5;
+const QUEUE_SIZE: usize = 6;
 const PROMPT_ROW: u16 = CONTENT_START_ROW + (QUEUE_SIZE as u16) + 1;
 
 pub use crate::ui_common::{show_playlists, show_songs, stop_lyrics};
@@ -151,6 +151,7 @@ fn draw_ui2_status(
     let max_lyric_width = lyric_area_width.saturating_sub(1);
 
     let artist_scroll = get_scrolling_text(artist, 25);
+    let title = blindly_trim(&title);
     let display_title = truncate_safe(title, 35);
 
     let fmt_time = |s: f64| format!("{:02}:{:02}", (s / 60.0) as u64, (s % 60.0) as u64);
@@ -199,8 +200,8 @@ fn draw_ui2_status(
 
     let cleaner = " ".repeat(lyric_area_width);
 
-    if max_lyric_width > 5 {
-        for offset in 0..7 {
+    if max_lyric_width > 9 {
+        for offset in 0..6 {
             let target_idx = current_idx + offset;
             let text = if target_idx < lyrics.len() {
                 &lyrics[target_idx].text

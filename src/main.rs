@@ -13,7 +13,7 @@ use crossterm::{
 use std::collections::VecDeque;
 use std::io::stdout;
 use std::process::Child;
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -23,6 +23,12 @@ use crate::ui1::{show_playlists, show_songs};
 // -------------------------------------------------------------------
 // DATA STRUCTURES
 // -------------------------------------------------------------------
+
+#[derive(Debug)]
+pub struct AppConfig {
+    pub offline_mode: bool,
+    pub no_autoplay: bool,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Track {
@@ -52,6 +58,8 @@ static RECENTLY_PLAYED: RwLock<VecDeque<Track>> = RwLock::new(VecDeque::new());
 const HISTORY_LIMIT: usize = 50;
 //TO KEEP CONSISTENT VOLUME LEVEL ACROSS TRACKS (TO BE READ BY player.rs)
 pub static VOLUME: AtomicI64 = AtomicI64::new(50);
+//ROMANIZES TRACKS BY DEFAULT
+pub static ROMANIZE: AtomicBool = AtomicBool::new(true);
 
 static VIEW_MODE: RwLock<String> = RwLock::new(String::new());
 static UI_MODE: AtomicUsize = AtomicUsize::new(0);
@@ -67,8 +75,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // PART 1 - GET ARGUMENTS, INITIAL GLOBAL (STATIC) VARIABLES
     // ----------------------------------------------------------------------------------
     let args: Vec<String> = std::env::args().collect();
-    let offline_mode = args.contains(&"--offline".to_string());
-    let no_autoplay = args.contains(&"--manual".to_string());
+
+    let config = AppConfig {
+        offline_mode: args.contains(&"--offline".to_string()),
+        no_autoplay: args.contains(&"--manual".to_string()),
+    };
 
     //set default view mode to queue
     *VIEW_MODE.write().unwrap() = "queue".to_string();
@@ -92,8 +103,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ----------------------------------------------------------------------------------
     // PART 2 - SETUP TRANSMITTER, RECIEVER CHANNEL FOR POLLING INPUT
-    //          transmitter (sends any input for Search/Command)
-    //          receiver (sleeps every 250 ms if not input)
+    //         transmitter (sends any input for Search/Command)
+    //         receiver (sleeps every 250 ms if not input)
     // ----------------------------------------------------------------------------------
 
     let (tx, rx) = mpsc::channel::<String>();
@@ -140,7 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ----------------------------------------------------------------------------------
     // CASE 1 : IF OFFLINE MODE INITIAL FETCH RANDOM SONG + POPULATE QUEUE
     // ----------------------------------------------------------------------------------
-    if offline_mode {
+    if config.offline_mode {
         let exclude = get_excluded_titles();
         {
             let mut q = SONG_QUEUE.write().unwrap();
@@ -222,11 +233,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // -------------------------------------------------------------------
                     // CASE 2.1 : IF AUTOPLAY IS ENABLED (DEFAULT MODE)
                     // -------------------------------------------------------------------
-                    if !no_autoplay {
+                    if !config.no_autoplay {
                         // -------------------------------------------------------------------
                         // CASE 2.1.1 : IF USER IS IN OFFLINE MODE (POPULATE FROM OFFLINE.RS)
                         // -------------------------------------------------------------------
-                        if offline_mode {
+                        if config.offline_mode {
                             let exclude = get_excluded_titles();
                             {
                                 let mut q = SONG_QUEUE.write().unwrap();
@@ -293,8 +304,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut current_track,
             &mut currently_playing,
             &music_dir,
-            offline_mode,
-            no_autoplay,
+            &config,
         )
         .await
         {
@@ -303,16 +313,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // -------------------------------------------------------------------
         // CASE 3 : IF NONE OF THE ABOVE AND IN OFFLINE MODE CONTINUE
-        //          (since search not allowed on offline mode)
+        //         (since search not allowed on offline mode)
         // -------------------------------------------------------------------
-        if offline_mode {
+        if config.offline_mode {
             refresh_ui(None);
             continue;
         }
 
         // -------------------------------------------------------------------
         // CASE 4 : IF NONE OF THE ABOVE AND IN ONLINE MODE,
-        //          USE RECIEVED TEXT TO SEARCH CUSTOM API
+        //         USE RECIEVED TEXT TO SEARCH CUSTOM API
         // -------------------------------------------------------------------
         let mut songs: Vec<api::SongDetails> = Vec::new();
         songs = match yt_client.search_songs(&input, 5).await {
@@ -339,7 +349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // -------------------------------------------------------------------
         // PART 6 - IF NONE OF THE ABOVE AND IN ONLINE MODE,
-        //          USE RECIEVED TEXT TO SEARCH CUSTOM API
+        //         USE RECIEVED TEXT TO SEARCH CUSTOM API
         // -------------------------------------------------------------------
         show_songs(&songs);
         // -------------------------------------------------------------------
@@ -359,7 +369,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &yt_client,
                 &mut current_track,
                 &mut currently_playing,
-                no_autoplay,
+                &config,
                 None,
             )
             .await
@@ -379,7 +389,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &yt_client,
                 &mut current_track,
                 &mut currently_playing,
-                no_autoplay,
+                &config,
                 None,
             )
             .await
@@ -396,9 +406,9 @@ async fn handle_global_commands(
     current_track: &mut Option<Track>,
     currently_playing: &mut Option<Child>,
     music_dir: &std::path::PathBuf,
-    offline_mode: bool,
-    no_autoplay: bool,
+    config: &AppConfig,
 ) -> bool {
+    let title_ref = current_track.as_ref().map(|t| t.title.as_str());
     // Seek check
     if input.starts_with('>') || input.starts_with('<') {
         if let Ok(s) = input[1..].trim().parse::<i64>() {
@@ -477,6 +487,14 @@ async fn handle_global_commands(
             println!("Status: {}", user_status);
             return true;
         }
+        "r" | "romanize" => {
+            let current = ROMANIZE.load(Ordering::Relaxed);
+            ROMANIZE.store(!current, Ordering::Relaxed);
+            execute!(stdout(), Clear(ClearType::All));
+
+            refresh_ui(title_ref);
+            return true;
+        }
         //toggle between the ui modes
         "v" | "view" => {
             let current_mode = UI_MODE.load(Ordering::Relaxed);
@@ -493,7 +511,6 @@ async fn handle_global_commands(
 
             execute!(stdout(), Clear(ClearType::All));
 
-            let title_ref = current_track.as_ref().map(|t| t.title.as_str());
             refresh_ui(title_ref);
 
             return true;
@@ -532,8 +549,8 @@ async fn handle_global_commands(
                     *currently_playing =
                         Some(player::play_file(&track.url, &track.title, music_dir).unwrap());
 
-                    if !no_autoplay {
-                        if offline_mode {
+                    if !config.no_autoplay {
+                        if config.offline_mode {
                             let exclude = get_excluded_titles();
                             let mut q = SONG_QUEUE.write().unwrap();
                             offline::populate_queue_offline(music_dir, &mut q, &exclude);
@@ -573,7 +590,7 @@ async fn handle_global_commands(
             return true;
         }
         "L" | "library" => {
-            if offline_mode {
+            if config.offline_mode {
                 refresh_ui(None);
                 return true;
             }
@@ -584,7 +601,7 @@ async fn handle_global_commands(
                 music_dir,
                 current_track,
                 currently_playing,
-                no_autoplay,
+                config,
             )
             .await
             {
@@ -605,7 +622,7 @@ pub async fn handle_song_selection(
     yt_client: &api::YTMusic,
     current_track: &mut Option<Track>,
     currently_playing: &mut Option<Child>,
-    no_autoplay: bool,
+    config: &AppConfig,
     playlist_context: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input = selection_input.trim();
@@ -651,7 +668,7 @@ pub async fn handle_song_selection(
                 music_dir,
             )?);
 
-            if !no_autoplay {
+            if !config.no_autoplay {
                 let yt = yt_client.clone();
                 let vid = selected.video_id.clone();
                 SONG_QUEUE.write().unwrap().clear();
@@ -675,7 +692,7 @@ async fn handle_library_browsing(
     music_dir: &std::path::PathBuf,
     current_track: &mut Option<Track>,
     currently_playing: &mut Option<Child>,
-    no_autoplay: bool,
+    config: &AppConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Fetching Library...");
     let playlists = yt_client.fetch_library_playlists().await?;
@@ -745,7 +762,7 @@ async fn handle_library_browsing(
                                 yt_client,
                                 current_track,
                                 currently_playing,
-                                no_autoplay,
+                                config,
                                 Some(selected_playlist.playlist_id.clone()),
                             )
                             .await?;
