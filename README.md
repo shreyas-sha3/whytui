@@ -19,6 +19,9 @@ UI 1             |  UI 2                               | UI 3
 
 ## Installation
 
+#### Requirements: `mpv` installed and in PATH
+
+
 1. Linux:
 
 ```bash
@@ -56,15 +59,18 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
 
 * Commands:
 
-  * `RETURN`  → pause the song
+  * `p | pause`  → play/pause the song
   * `n | next`  → play next song in the queue (note: `n3` to skip 3 songs)
-  * `p | prev`  → play previous song in the queue
-  * `t`  → toggle queue and recently played
+  * `b | back`  → play previous song in the queue
   * `< / >`   → seek song in seconds (e.g., `>10` to seek 10 seconds forward)
-  * `r | romanize`  → romanize/de-romanize (true by default)
+  
   * `c | clear`  → clear the queue
+  * `r | recents`  → recently played / queue toggle
+  * `t | translate`  → toggle romanize/translate
+  
   * `L | library` → show ytmusic playlists
   * `l | like` → add currently playing song to liked songs
+  
   * `s | stop`  → stop current song
   * `q | quit`  → quit the application
 
@@ -73,11 +79,6 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
   * `--offline` to just play offline songs
 
 * Note: Netscape cookies can be added at `$MusicDir/whytui/config/cookies.txt`
-
-## Requirements
-
-* Rust 
-* `mpv` installed and in PATH
 
 
 ## TODO

@@ -1,4 +1,5 @@
-use crate::api::{LrcLine, PlaylistDetails, SongDetails, fetch_synced_lyrics, split_title_artist};
+use crate::api::{PlaylistDetails, SongDetails, split_title_artist};
+use crate::features::{LrcLine, fetch_synced_lyrics};
 use crate::player;
 use colored::*;
 use crossterm::{
@@ -7,7 +8,7 @@ use crossterm::{
     terminal::{self, ClearType},
 };
 use std::io::{Write, stdout};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -18,6 +19,13 @@ pub static CURRENT_LYRIC_SONG: RwLock<String> = RwLock::new(String::new());
 pub static TITLE_SCROLL: RwLock<usize> = RwLock::new(0);
 pub static LAST_SCROLL: RwLock<Option<Instant>> = RwLock::new(None);
 
+pub static LYRIC_DISPLAY_MODE: AtomicU8 = AtomicU8::new(0);
+
+pub fn cycle_lyric_display_mode() {
+    LYRIC_DISPLAY_MODE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| Some((x + 1) % 3))
+        .unwrap();
+}
 pub fn stop_lyrics() {
     let mut monitor_guard = SONG_MONITOR.write().unwrap();
     if let Some(stop_signal) = monitor_guard.take() {
@@ -26,6 +34,9 @@ pub fn stop_lyrics() {
     *CURRENT_LYRIC_SONG.write().unwrap() = String::new();
 }
 
+pub fn clear_lyrics() {
+    LYRICS.write().unwrap().clear();
+}
 pub fn get_banner_art() -> String {
     let art = r#"
    █     █░ ██░ ██▓ ██   ██▓ ▄███████▓ █    ██  ██▓
@@ -149,6 +160,8 @@ where
                     *w = vec![LrcLine {
                         timestamp: Duration::from_secs(0),
                         text: ">_<".dimmed().to_string(),
+                        translation: None,
+                        romanized: None,
                     }]
                 }
             }

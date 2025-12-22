@@ -57,10 +57,6 @@ pub fn play_file(
 
 pub fn stop_process(proc: &mut Option<Child>, song_name: &str, music_dir: &PathBuf) {
     if let Some(mut child) = proc.take() {
-        //kill for Linux/Mac
-        let _ = child.kill();
-        let _ = child.wait();
-
         #[cfg(target_os = "windows")]
         {
             let _ = Command::new("taskkill")
@@ -68,6 +64,9 @@ pub fn stop_process(proc: &mut Option<Child>, song_name: &str, music_dir: &PathB
                 .creation_flags(0x08000000)
                 .output();
         }
+        //kill for Linux/Mac
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     clear_temp(music_dir);

@@ -69,7 +69,7 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], _toggle: &str)
                                     _full: &str,
                                     curr: f64,
                                     tot: f64,
-                                    lyrics: &[crate::api::LrcLine],
+                                    lyrics: &[crate::features::LrcLine],
                                     idx: usize| {
                     draw_minimal_ui(title, artist, curr, tot, lyrics, idx, &up_next_display);
                 };
@@ -86,7 +86,7 @@ fn draw_minimal_ui(
     artist: &str,
     curr: f64,
     tot: f64,
-    lyrics: &[crate::api::LrcLine],
+    lyrics: &[crate::features::LrcLine],
     current_idx: usize,
     mut up_next: &str,
 ) {
@@ -151,7 +151,7 @@ fn draw_minimal_ui(
     if !lyrics.is_empty() && available_lyric_height > 0 {
         let center_row = lyric_area_start + (available_lyric_height / 2);
 
-        let active_text = &lyrics[current_idx].text;
+        let active_text = &lyrics[current_idx].get_current_text();
         let active_lines = word_wrap_cjk(active_text, lyric_width);
         let active_block_start = center_row.saturating_sub((active_lines.len() / 2) as u16);
 
@@ -179,7 +179,7 @@ fn draw_minimal_ui(
             if cursor_row <= lyric_area_start {
                 break;
             }
-            let lines = word_wrap_cjk(&lyrics[i].text, lyric_width);
+            let lines = word_wrap_cjk(&lyrics[i].get_current_text(), lyric_width);
             let count = lines.len() as u16;
             if cursor_row < count {
                 break;
@@ -205,7 +205,7 @@ fn draw_minimal_ui(
             if cursor_row >= lyric_area_end {
                 break;
             }
-            let lines = word_wrap_cjk(&lyrics[i].text, lyric_width);
+            let lines = word_wrap_cjk(&lyrics[i].get_current_text(), lyric_width);
             for line in lines {
                 if cursor_row < lyric_area_end {
                     queue!(

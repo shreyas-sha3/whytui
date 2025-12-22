@@ -111,7 +111,7 @@ fn draw_ui1_status(
     _full_name: &str,
     curr: f64,
     tot: f64,
-    lyrics: &[crate::api::LrcLine],
+    lyrics: &[crate::features::LrcLine],
     current_idx: usize,
 ) {
     let mut stdout = stdout();
@@ -146,12 +146,12 @@ fn draw_ui1_status(
     let bar_pad = (width_usize.saturating_sub(total_bar_len)) / 2;
 
     let current_text = if current_idx < lyrics.len() {
-        &lyrics[current_idx].text
+        &lyrics[current_idx].get_current_text()
     } else {
         ""
     };
     let next_text = if current_idx + 1 < lyrics.len() {
-        &lyrics[current_idx + 1].text
+        &lyrics[current_idx + 1].get_current_text()
     } else {
         ""
     };

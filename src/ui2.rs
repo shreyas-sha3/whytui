@@ -136,7 +136,7 @@ fn draw_ui2_status(
     _full_name: &str,
     curr: f64,
     tot: f64,
-    lyrics: &[crate::api::LrcLine],
+    lyrics: &[crate::features::LrcLine],
     current_idx: usize,
 ) {
     let mut stdout = stdout();
@@ -204,7 +204,7 @@ fn draw_ui2_status(
         for offset in 0..6 {
             let target_idx = current_idx + offset;
             let text = if target_idx < lyrics.len() {
-                &lyrics[target_idx].text
+                &lyrics[target_idx].get_current_text()
             } else {
                 ""
             };

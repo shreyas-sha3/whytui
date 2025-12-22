@@ -1,10 +1,12 @@
 mod api;
+mod features;
 mod offline;
 mod player;
 mod ui1;
 mod ui2;
 mod ui3;
 mod ui_common;
+
 use crossterm::{
     event::{self, Event},
     execute,
@@ -131,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // RESTRICTION: ENFORCE MINIMUM TERMINAL SIZE
     // -------------------------------------------------------------------
     let min_width = 52;
-    let min_height = 36;
+    let min_height = 37;
 
     loop {
         let (cols, rows) = crossterm::terminal::size().unwrap_or((0, 0));
@@ -210,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // -------------------------------------------------------------------
                 // CASE 1 : A SONG IS CURRENTLY BEING PLAYED
                 // -------------------------------------------------------------------
-                ui_common::stop_lyrics(); // stop display of lyrics
+                ui_common::clear_lyrics(); // stop display of lyrics
                 if let Some(track) = &current_track {
                     let temp = music_dir.join("temp").join(format!("{}.webm", track.title));
                     let full = music_dir.join(format!("{}.webm", track.title));
@@ -491,13 +493,13 @@ async fn handle_global_commands(
             println!("Status: {}", user_status);
             return true;
         }
-        "r" | "romanize" => {
-            ui_common::stop_lyrics();
-
-            let current = ROMANIZE.load(Ordering::Relaxed);
-            ROMANIZE.store(!current, Ordering::Relaxed);
-            execute!(stdout(), Clear(ClearType::All));
-            refresh_ui(title_ref);
+        "t" | "translate" => {
+            // ui_common::stop_lyrics();
+            ui_common::cycle_lyric_display_mode();
+            // let current = ROMANIZE.load(Ordering::Relaxed);
+            // ROMANIZE.store(!current, Ordering::Relaxed);
+            // execute!(stdout(), Clear(ClearType::All));
+            refresh_ui(None);
             return true;
         }
         //toggle between the ui modes
@@ -513,7 +515,7 @@ async fn handle_global_commands(
 
             return true;
         }
-        "t" | "toggle" => {
+        "r" | "recents" => {
             {
                 let mut mode = VIEW_MODE.write().unwrap();
                 *mode = if *mode == "queue" {
@@ -535,6 +537,7 @@ async fn handle_global_commands(
             } else {
                 s[1..].parse::<usize>().unwrap_or(1)
             };
+            ui_common::clear_lyrics();
 
             for _ in 0..steps {
                 if let Some(track) = current_track {
@@ -653,7 +656,7 @@ pub async fn handle_song_selection(
         let new_track = Track::new(selected.title.clone(), src, Some(selected.video_id.clone()));
 
         if is_queue {
-            queue_add(new_track);
+            queue_add_front(new_track);
             refresh_ui(None);
         } else {
             if let Some(track) = current_track {
@@ -721,7 +724,7 @@ async fn handle_library_browsing(
 
             loop {
                 refresh_ui(None);
-                println!(" [n] Next | [p] Prev");
+                println!(" [n] Next | [p] Prev [b] Back");
 
                 {
                     let songs = LIBRARY_SONG_LIST.read().unwrap();
