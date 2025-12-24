@@ -37,7 +37,19 @@ pub fn stop_lyrics() {
 pub fn clear_lyrics() {
     LYRICS.write().unwrap().clear();
 }
+
 pub fn get_banner_art() -> String {
+    let is_lossless = crate::PLAYING_LOSSLESS.load(Ordering::SeqCst);
+
+    let quality_line = if is_lossless {
+        "    ░     ░  ░  FLAC • LOSSLESS AUDIO  ░       ░"
+            .dimmed()
+            .bold()
+            .blink()
+    } else {
+        "    ░     ░  ░  WEBM • STANDARD AUDIO  ░       ░".dimmed()
+    };
+
     let art = r#"
    █     █░ ██░ ██▓ ██   ██▓ ▄███████▓ █    ██  ██▓
   ▓█░ █ ░█░▓██░ ██▒ ▒██  ██▒▓   ██▒ ▓▒ ██  ▓██ ▒▓██▒
@@ -47,8 +59,6 @@ pub fn get_banner_art() -> String {
   ░ ▓░▒ ▒   ▒ ░░▒░▒   ██▒▒▒    ▒ ░░   ░▒▓▒ ▒ ▒  ░▓
     ▒ ░ ░   ▒ ░▒░ ░ ▓██ ░▒░      ░    ░░▒░ ░ ░   ▒ ░
     ░   ░   ░  ░░ ░ ▒ ▒ ░░     ░       ░░░ ░  ░  ▒ ░
-    ░     ░  ░  ░ ░ ░                  ░       ░
-                ░  ░
 "#;
 
     let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
@@ -56,15 +66,18 @@ pub fn get_banner_art() -> String {
 
     let art_width = 54;
     let padding = width.saturating_sub(art_width) / 2;
-    let pad_str = " ".repeat(padding);
+    let pad = " ".repeat(padding);
 
-    let centered = art
+    let mut output = art
         .lines()
-        .map(|line| format!("{}{}", pad_str, line))
-        .collect::<Vec<String>>()
+        .map(|l| format!("{pad}{l}"))
+        .collect::<Vec<_>>()
         .join("\n");
 
-    centered.blue().dimmed().to_string()
+    output.push('\n');
+    output.push_str(&format!("{pad}{}", quality_line));
+
+    output.blue().dimmed().to_string()
 }
 
 pub fn dur_to_secs(d: Duration) -> f64 {
@@ -219,11 +232,17 @@ pub fn truncate_safe(s: &str, max_width: usize) -> String {
 }
 
 pub fn blindly_trim(text: &str) -> &str {
-    let first = text
-        .split(|c| c == '-' || c == '(' || c == '[' || c == '_' || c == '|')
-        .next()
-        .unwrap_or("");
-    first
+    let separators = ['-', '(', '[', '_', '|'];
+
+    let mut cut = text.len();
+
+    for sep in separators {
+        let pattern = format!(" {}", sep);
+        if let Some(idx) = text.find(&pattern) {
+            cut = cut.min(idx);
+        }
+    }
+    &text[..cut]
 }
 
 pub fn word_wrap_cjk(text: &str, max_width: usize) -> Vec<String> {

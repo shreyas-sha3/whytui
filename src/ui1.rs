@@ -41,15 +41,14 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], toggle: &str) 
 
     queue!(
         stdout,
-        cursor::MoveTo(header_pad as u16, 18),
-        Print(raw_header.cyan())
+        cursor::MoveTo(0, 18),
+        terminal::Clear(ClearType::FromCursorDown)
     )
     .unwrap();
-
     queue!(
         stdout,
-        cursor::MoveTo(0, 19),
-        terminal::Clear(ClearType::FromCursorDown)
+        cursor::MoveTo(header_pad as u16, 18),
+        Print(raw_header.cyan())
     )
     .unwrap();
 

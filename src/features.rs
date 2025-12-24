@@ -1,4 +1,3 @@
-use crate::ROMANIZE;
 use crate::api::split_title_artist;
 use crate::ui_common::blindly_trim;
 use reqwest::Client;
@@ -9,12 +8,12 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub struct LrcLine {
     pub timestamp: Duration,
-    pub text: String,                // Original Text (e.g., Malayalam)
-    pub translation: Option<String>, // Translated Text (e.g., English)
-    pub romanized: Option<String>,   // Romanized Text (e.g., Manglish)
+    pub text: String,
+    pub translation: Option<String>,
+    pub romanized: Option<String>,
 }
 
-use crate::ui_common::LYRIC_DISPLAY_MODE; // Import the mode we just created
+use crate::ui_common::LYRIC_DISPLAY_MODE;
 impl LrcLine {
     pub fn get_current_text(&self) -> &str {
         let mode = LYRIC_DISPLAY_MODE.load(Ordering::Relaxed);
@@ -35,6 +34,7 @@ pub async fn fetch_synced_lyrics(
 
     let mut search_urls = Vec::new();
 
+    let clean_title = blindly_trim(&title);
     for individual_artist in artist.split(',').take(2) {
         let trimmed_artist = individual_artist.trim();
 
@@ -46,14 +46,13 @@ pub async fn fetch_synced_lyrics(
 
             search_urls.push(format!(
                 "https://lrclib.net/api/search?track_name={}&artist_name={}&duration={}",
-                urlencoding::encode(&title),
+                urlencoding::encode(&clean_title),
                 urlencoding::encode(first_word),
                 duration_secs
             ));
         }
     }
 
-    let clean_title = blindly_trim(&title);
     search_urls.push(format!(
         "https://lrclib.net/api/search?track_name={}&duration={}",
         urlencoding::encode(clean_title),
@@ -78,7 +77,7 @@ pub async fn fetch_synced_lyrics(
                             if !sync.trim().is_empty() {
                                 let mut lines = parse_lrc(sync);
 
-                                if ROMANIZE.load(Ordering::Relaxed) && !is_mostly_english(&lines) {
+                                if !is_mostly_english(&lines) {
                                     let _ = romanize_lyrics_google(&client, &mut lines).await;
                                 }
 

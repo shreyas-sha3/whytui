@@ -31,7 +31,7 @@ pub fn play_file(
 ) -> Result<Child, Box<dyn std::error::Error>> {
     let ipc = get_ipc_path();
     let current_vol = crate::VOLUME.load(Ordering::Relaxed);
-    // Only remove socket file on Unix (Windows pipes are kernel objects)
+
     #[cfg(unix)]
     let _ = std::fs::remove_file(&ipc);
 
@@ -43,14 +43,19 @@ pub fn play_file(
         .arg(format!("--volume={}", current_vol));
 
     if source.starts_with("http") {
-        let temp_path = music_dir.join("temp").join(format!("{}.webm", title));
+        let ext = if source.contains("tidal") {
+            crate::PLAYING_LOSSLESS.store(true, Ordering::SeqCst);
+            "flac"
+        } else {
+            crate::PLAYING_LOSSLESS.store(false, Ordering::SeqCst);
+            "webm"
+        };
+
+        let temp_path = music_dir.join("temp").join(format!("{title}.{ext}"));
+
         cmd.arg(format!("--stream-record={}", temp_path.to_string_lossy()));
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-    }
+
     cmd.arg(source).stdout(Stdio::null()).stderr(Stdio::null());
     Ok(cmd.spawn()?)
 }
@@ -68,8 +73,6 @@ pub fn stop_process(proc: &mut Option<Child>, song_name: &str, music_dir: &PathB
         let _ = child.kill();
         let _ = child.wait();
     }
-
-    clear_temp(music_dir);
 }
 
 pub fn clear_temp(music_dir: &PathBuf) {

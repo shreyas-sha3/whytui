@@ -67,6 +67,7 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
   * `c | clear`  → clear the queue
   * `r | recents`  → recently played / queue toggle
   * `t | translate`  → toggle romanize/translate
+  * `w | wrong`  → disable lyrics for current song
   
   * `L | library` → show ytmusic playlists
   * `l | like` → add currently playing song to liked songs

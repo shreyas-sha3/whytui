@@ -1,5 +1,6 @@
 mod api;
 mod features;
+mod flac;
 mod offline;
 mod player;
 mod ui1;
@@ -19,9 +20,15 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
+use tokio::time;
 
-use crate::api::SongDetails;
-use crate::ui1::{show_playlists, show_songs};
+use crate::player::clear_temp;
+use crate::{api::SongDetails, ui3::blindly_trim};
+use crate::{
+    flac::fetch_flac_stream_url,
+    flac::init_api,
+    ui1::{show_playlists, show_songs},
+};
 // -------------------------------------------------------------------
 // DATA STRUCTURES
 // -------------------------------------------------------------------
@@ -59,10 +66,8 @@ static RELATED_SONG_LIST: RwLock<Vec<(String, String)>> = RwLock::new(Vec::new()
 static RECENTLY_PLAYED: RwLock<VecDeque<Track>> = RwLock::new(VecDeque::new());
 const HISTORY_LIMIT: usize = 50;
 //TO KEEP CONSISTENT VOLUME LEVEL ACROSS TRACKS (TO BE READ BY player.rs)
-pub static VOLUME: AtomicI64 = AtomicI64::new(50);
-//ROMANIZES TRACKS BY DEFAULT
-pub static ROMANIZE: AtomicBool = AtomicBool::new(true);
-
+pub static VOLUME: AtomicI64 = AtomicI64::new(70);
+pub static PLAYING_LOSSLESS: AtomicBool = AtomicBool::new(false);
 static VIEW_MODE: RwLock<String> = RwLock::new(String::new());
 static UI_MODE: AtomicUsize = AtomicUsize::new(0);
 
@@ -97,6 +102,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut current_track: Option<Track> = None;
     // CLEAR SCREEN BEFORE STARTING THE REAL SHIT
     execute!(stdout(), Clear(ClearType::All));
+
+    clear_temp(&music_dir);
+    println!("Finding fastest FLAC server...");
+    if let Err(e) = init_api().await {
+        println!("FLAC API Init failed: {}", e);
+    }
     //
     //
     //
@@ -214,14 +225,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // -------------------------------------------------------------------
                 ui_common::clear_lyrics(); // stop display of lyrics
                 if let Some(track) = &current_track {
-                    let temp = music_dir.join("temp").join(format!("{}.webm", track.title));
-                    let full = music_dir.join(format!("{}.webm", track.title));
-                    // Rename only if the temp(previously played song fully buffered) exists
-                    if temp.exists() {
-                        std::fs::rename(&temp, &full).ok();
+                    let base_temp = music_dir.join("temp").join(&track.title);
+                    let base_full = music_dir.join(&track.title);
+
+                    for ext in ["webm", "flac"] {
+                        let temp = base_temp.with_extension(ext);
+                        let full = base_full.with_extension(ext);
+
+                        if temp.exists() {
+                            std::fs::rename(&temp, &full).ok();
+                            break;
+                        }
                     }
                     add_to_history(track.clone());
                 }
+
                 currently_playing = None;
 
                 // -------------------------------------------------------------------
@@ -331,6 +349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         songs = match yt_client.search_songs(&input, 5).await {
             Ok(s) => s,
             Err(_) => {
+                std::thread::sleep(Duration::from_millis(75));
                 println!("Search failed.");
                 continue;
             }
@@ -340,6 +359,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // CASE 4.1 : IF NO RESULTS SIMPLY REFRESH UI
         // -------------------------------------------------------------------
         if songs.is_empty() {
+            std::thread::sleep(Duration::from_millis(75));
             println!("No results.");
             refresh_ui(None);
             continue;
@@ -354,7 +374,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // PART 6 - IF NONE OF THE ABOVE AND IN ONLINE MODE,
         //         USE RECIEVED TEXT TO SEARCH CUSTOM API
         // -------------------------------------------------------------------
-        show_songs(&songs);
         // -------------------------------------------------------------------
         // CASE 1 : IF USING MINIMAL UI SIMULATE AUTO SELECTING FIRST RESULT
         // -------------------------------------------------------------------
@@ -381,6 +400,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
+        show_songs(&songs);
         // -------------------------------------------------------------------
         // CASE 2 : IF IN OTHER UI MODE TAKE INPUT FROM USER FOR SELECTION
         // -------------------------------------------------------------------
@@ -496,9 +516,13 @@ async fn handle_global_commands(
         "t" | "translate" => {
             // ui_common::stop_lyrics();
             ui_common::cycle_lyric_display_mode();
-            // let current = ROMANIZE.load(Ordering::Relaxed);
-            // ROMANIZE.store(!current, Ordering::Relaxed);
-            // execute!(stdout(), Clear(ClearType::All));
+
+            refresh_ui(None);
+            return true;
+        }
+        "w" | "wrong" => {
+            ui_common::stop_lyrics();
+            ui_common::clear_lyrics();
             refresh_ui(None);
             return true;
         }
@@ -642,14 +666,30 @@ pub async fn handle_song_selection(
 
     if idx >= 1 && idx <= songs_list.len() {
         let selected = &songs_list[idx - 1];
-        let path = music_dir.join(format!("{}.webm", selected.title));
 
-        let src = if path.exists() {
-            path.to_string_lossy().to_string()
+        let webm = music_dir.join(format!("{}.webm", selected.title));
+        let flac = music_dir.join(format!("{}.flac", selected.title));
+
+        let src = if flac.exists() {
+            flac.to_string_lossy().to_string()
+        } else if webm.exists() {
+            webm.to_string_lossy().to_string()
         } else {
-            match yt_client.fetch_stream_url(&selected.video_id).await {
-                Ok(u) => u,
-                Err(_) => return Ok(()),
+            //try flac first if not available offline
+            let clean_title = blindly_trim(&selected.title);
+            let query = format!("{} {}", clean_title, selected.artists.join(","));
+            match fetch_flac_stream_url(&query).await {
+                Ok(url) => {
+                    println!(":) Playing FLAC stream");
+                    url
+                }
+                Err(_) => {
+                    println!(">_< FLAC not found, falling back to YouTube...");
+                    match yt_client.fetch_stream_url(&selected.video_id).await {
+                        Ok(u) => u,
+                        Err(_) => return Ok(()),
+                    }
+                }
             }
         };
 
@@ -668,7 +708,7 @@ pub async fn handle_song_selection(
                 let mut guard = PLAYING_FROM_LIBRARY.write().unwrap();
                 *guard = playlist_context;
             }
-
+            ui_common::clear_lyrics();
             *current_track = Some(new_track.clone());
             *currently_playing = Some(player::play_file(
                 &new_track.url,
@@ -903,7 +943,15 @@ pub async fn queue_auto_add_online(yt: api::YTMusic, id: String) {
 
         // Resolve stream URLs and add to queue
         for (title, video_id) in to_fetch {
-            if let Ok(url) = yt.fetch_stream_url(&video_id).await {
+            let final_url = match fetch_flac_stream_url(&title).await {
+                Ok(url) => Some(url),
+                Err(_) => match yt.fetch_stream_url(&video_id).await {
+                    Ok(u) => Some(u),
+                    Err(_) => None,
+                },
+            };
+
+            if let Some(url) = final_url {
                 queue_add(Track::new(title, url, Some(video_id)));
             }
         }
