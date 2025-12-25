@@ -8,6 +8,16 @@ mod ui2;
 mod ui3;
 mod ui_common;
 
+use crate::player::clear_temp;
+use crate::ui_common::set_status_line;
+use crate::{api::SongDetails, ui3::blindly_trim};
+use crate::{
+    flac::fetch_flac_stream_url,
+    flac::init_api,
+    ui1::{show_playlists, show_songs},
+};
+use colored::*;
+
 use crossterm::{
     event::{self, Event},
     execute,
@@ -17,18 +27,10 @@ use std::collections::VecDeque;
 use std::io::stdout;
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
-use std::sync::{RwLock, mpsc};
+use std::sync::{OnceLock, RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
 use tokio::time;
-
-use crate::player::clear_temp;
-use crate::{api::SongDetails, ui3::blindly_trim};
-use crate::{
-    flac::fetch_flac_stream_url,
-    flac::init_api,
-    ui1::{show_playlists, show_songs},
-};
 // -------------------------------------------------------------------
 // DATA STRUCTURES
 // -------------------------------------------------------------------
@@ -37,6 +39,7 @@ use crate::{
 pub struct AppConfig {
     pub offline_mode: bool,
     pub no_autoplay: bool,
+    pub lossless_mode: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -59,7 +62,8 @@ impl Track {
 // ----------------------------------------------------------------------------------
 // GLOBAL STATE
 // ----------------------------------------------------------------------------------
-
+//
+static CONFIG: OnceLock<AppConfig> = OnceLock::new();
 static SONG_QUEUE: RwLock<Vec<Track>> = RwLock::new(Vec::new());
 // HOLDS just VIDEO ID of related songs upto 50 songs. SONG_QUEUE is populated by fetching urls from this list
 static RELATED_SONG_LIST: RwLock<Vec<(String, String)>> = RwLock::new(Vec::new());
@@ -83,10 +87,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ----------------------------------------------------------------------------------
     let args: Vec<String> = std::env::args().collect();
 
-    let config = AppConfig {
+    let app_config = AppConfig {
         offline_mode: args.contains(&"--offline".to_string()),
         no_autoplay: args.contains(&"--manual".to_string()),
+        lossless_mode: args.contains(&"--lossless".to_string()),
     };
+
+    // Set the global OnceLock
+    CONFIG.set(app_config).expect("Failed to set config");
 
     //set default view mode to queue
     *VIEW_MODE.write().unwrap() = "queue".to_string();
@@ -104,9 +112,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     execute!(stdout(), Clear(ClearType::All));
 
     clear_temp(&music_dir);
-    println!("Finding fastest FLAC server...");
-    if let Err(e) = init_api().await {
-        println!("FLAC API Init failed: {}", e);
+    if config().lossless_mode {
+        println!("Finding fastest FLAC server...");
+        if let Err(e) = init_api().await {
+            println!("FLAC API Init failed: {}", e);
+        }
     }
     //
     //
@@ -120,16 +130,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //         receiver (sleeps every 250 ms if not input)
     // ----------------------------------------------------------------------------------
 
+    // let (tx, rx) = mpsc::channel::<String>();
+    // thread::spawn(move || {
+    //     loop {
+    //         let mut s = String::new();
+    //         if std::io::stdin().read_line(&mut s).is_ok() {
+    //             let _ = tx.send(s.trim().to_string());
+    //         }
+    //     }
+    // });
     let (tx, rx) = mpsc::channel::<String>();
-    thread::spawn(move || {
-        loop {
-            let mut s = String::new();
-            if std::io::stdin().read_line(&mut s).is_ok() {
-                let _ = tx.send(s.trim().to_string());
-            }
-        }
-    });
-
+    spawn_input_handler(tx);
     //
     //
     //
@@ -164,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ----------------------------------------------------------------------------------
     // CASE 1 : IF OFFLINE MODE INITIAL FETCH RANDOM SONG + POPULATE QUEUE
     // ----------------------------------------------------------------------------------
-    if config.offline_mode {
+    if config().offline_mode {
         let exclude = get_excluded_titles();
         {
             let mut q = SONG_QUEUE.write().unwrap();
@@ -172,11 +183,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if let Some(track) = queue_next() {
+            set_status_line(None);
             current_track = Some(track.clone()); //to pass it around to functions like next song
             currently_playing = Some(player::play_file(&track.url, &track.title, &music_dir)?); //object to stop the current song
             refresh_ui(Some(&track.title));
         } else {
-            println!("No local songs found in {:?}", music_dir);
+            set_status_line(Some(format!("No local songs found!")));
             refresh_ui(Some("Nothing Playing"));
         }
     }
@@ -188,7 +200,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .fetch_account_name()
             .await
             .unwrap_or("Error".to_string());
-        let login_message = format!("\n Hello {}! | Nothing Playing ", user_status);
+        set_status_line(Some(format!("Wassup {}", user_status)));
+
+        let login_message = format!("\nNothing Playing");
         refresh_ui(Some(&login_message));
     }
 
@@ -202,15 +216,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // START OF GAME LOOP (BOTH ONLINE,OFFLINE)
     // -------------------------------------------------------------------
     loop {
-        if event::poll(Duration::from_millis(0))? {
-            match event::read()? {
-                Event::Resize(_, _) => {
-                    execute!(stdout(), Clear(ClearType::All))?;
-                    refresh_ui(None);
-                }
-                _ => {}
-            }
-        }
+        // if event::poll(Duration::from_millis(0))? {
+        //     match event::read()? {
+        //         Event::Resize(_, _) => {
+        //             execute!(stdout(), Clear(ClearType::All))?;
+        //             refresh_ui(None);
+        //         }
+        //         _ => {}
+        //     }
+        // }
 
         // -------------------------------------------------------------------
         // PART 4 - CHECK IF A SONG IS PLAYING ALREADY
@@ -225,8 +239,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // -------------------------------------------------------------------
                 ui_common::clear_lyrics(); // stop display of lyrics
                 if let Some(track) = &current_track {
-                    let base_temp = music_dir.join("temp").join(&track.title);
-                    let base_full = music_dir.join(&track.title);
+                    let safe_title = track.title.replace(['/', '\\'], "-");
+                    let base_temp = music_dir.join("temp").join(&safe_title);
+                    let base_full = music_dir.join(&safe_title);
 
                     for ext in ["webm", "flac"] {
                         let temp = base_temp.with_extension(ext);
@@ -247,6 +262,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // -------------------------------------------------------------------
                 if let Some(track) = queue_next() {
                     //Check queue first - If yes play next in queue
+                    set_status_line(None);
                     current_track = Some(track.clone());
                     currently_playing =
                         Some(player::play_file(&track.url, &track.title, &music_dir)?);
@@ -254,11 +270,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // -------------------------------------------------------------------
                     // CASE 2.1 : IF AUTOPLAY IS ENABLED (DEFAULT MODE)
                     // -------------------------------------------------------------------
-                    if !config.no_autoplay {
+                    if !config().no_autoplay {
                         // -------------------------------------------------------------------
                         // CASE 2.1.1 : IF USER IS IN OFFLINE MODE (POPULATE FROM OFFLINE.RS)
                         // -------------------------------------------------------------------
-                        if config.offline_mode {
+                        if config().offline_mode {
                             let exclude = get_excluded_titles();
                             {
                                 let mut q = SONG_QUEUE.write().unwrap();
@@ -302,6 +318,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => {
                 // if nothing sleep for 250 ms for cpu relief (not the best idea)
                 thread::sleep(Duration::from_millis(250));
+                set_status_line(None);
                 continue;
             }
         };
@@ -325,7 +342,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut current_track,
             &mut currently_playing,
             &music_dir,
-            &config,
         )
         .await
         {
@@ -336,7 +352,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // CASE 3 : IF NONE OF THE ABOVE AND IN OFFLINE MODE CONTINUE
         //         (since search not allowed on offline mode)
         // -------------------------------------------------------------------
-        if config.offline_mode {
+        if config().offline_mode {
             refresh_ui(None);
             continue;
         }
@@ -350,7 +366,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(s) => s,
             Err(_) => {
                 std::thread::sleep(Duration::from_millis(75));
-                println!("Search failed.");
+                set_status_line(Some("Search failed (retry)".to_string()));
+                refresh_ui(None);
                 continue;
             }
         };
@@ -359,8 +376,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // CASE 4.1 : IF NO RESULTS SIMPLY REFRESH UI
         // -------------------------------------------------------------------
         if songs.is_empty() {
-            std::thread::sleep(Duration::from_millis(75));
-            println!("No results.");
+            set_status_line(Some("Search failed (retry)".to_string()));
             refresh_ui(None);
             continue;
         }
@@ -391,7 +407,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &yt_client,
                 &mut current_track,
                 &mut currently_playing,
-                &config,
                 None,
             )
             .await
@@ -412,11 +427,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &yt_client,
                 &mut current_track,
                 &mut currently_playing,
-                &config,
                 None,
             )
             .await
-            .unwrap_or_else(|e| println!("Error playing song: {}", e));
+            .unwrap_or_else(|e| set_status_line(Some(":( Error playing song".to_string())));
         }
     }
 }
@@ -425,12 +439,11 @@ use std::path::PathBuf;
 
 async fn handle_global_commands(
     input: &str,
-    rx: &std::sync::mpsc::Receiver<String>, //to give to library
+    rx: &std::sync::mpsc::Receiver<String>,
     yt_client: &api::YTMusic,
     current_track: &mut Option<Track>,
     currently_playing: &mut Option<Child>,
     music_dir: &std::path::PathBuf,
-    config: &AppConfig,
 ) -> bool {
     let title_ref = current_track.as_ref().map(|t| t.title.as_str()); //now playing song title to pass to refresh_ui
     let current_mode = UI_MODE.load(Ordering::Relaxed); //current ui mode
@@ -446,6 +459,11 @@ async fn handle_global_commands(
 
     // special commands
     match input {
+        "REFRESH_UI" => {
+            execute!(stdout(), Clear(ClearType::All));
+            refresh_ui(None);
+            return true;
+        }
         "q" | "quit" => {
             if let Some(track) = current_track {
                 add_to_history(track.clone());
@@ -460,28 +478,30 @@ async fn handle_global_commands(
                 player::stop_process(currently_playing, &track.title, music_dir);
             }
             *current_track = None;
+            set_status_line(Some(format!("STOPPED SONG")));
             refresh_ui(Some("Nothing Playing"));
             return true;
         }
         "c" | "clear" => {
             SONG_QUEUE.write().unwrap().clear();
-            refresh_ui(None);
+            set_status_line(Some(format!("QUEUE CLEARED")));
             return true;
         }
-        s if s.chars().all(|c| c == '-' || c == '+') => {
-            let delta: i64 = s.chars().map(|c| if c == '+' { 5 } else { -5 }).sum();
+        s if s == "+" || s == "-" => {
+            let delta: i64 = if s == "+" { 5 } else { -5 };
             let current = VOLUME.load(Ordering::Relaxed);
             let new_vol = (current + delta).clamp(0, 150);
             VOLUME.store(new_vol, Ordering::Relaxed);
             player::vol_change(delta);
-            refresh_ui(None);
+            set_status_line(Some(format!("VOLUME {}", new_vol)));
             return true;
         }
-        "p" | "pause" => {
+
+        "pause" => {
             if currently_playing.is_some() {
                 player::toggle_pause();
+                set_status_line(Some(format!("PAUSED/PLAYED")));
             }
-            refresh_ui(None);
             return true;
         }
         "l" | "like" => {
@@ -495,9 +515,11 @@ async fn handle_global_commands(
                     tokio::spawn(async move {
                         match yt.like_song(&video_id).await {
                             Ok(_) => {
-                                println!("'{}' Added to Liked Songs", title);
+                                set_status_line(Some("Added to Liked Songs!".to_string()));
                             }
-                            Err(e) => eprintln!("Error liking song: {}", e),
+                            Err(e) => {
+                                set_status_line(Some(format!(":( Couldn't like song: {}", e)));
+                            }
                         }
                     });
                 }
@@ -510,19 +532,25 @@ async fn handle_global_commands(
                 .fetch_account_name()
                 .await
                 .unwrap_or("Error".to_string());
-            println!("Status: {}", user_status);
+            set_status_line(Some(format!("Wassup {}", user_status)));
             return true;
         }
         "t" | "translate" => {
             // ui_common::stop_lyrics();
             ui_common::cycle_lyric_display_mode();
-
+            let mode = ui_common::LYRIC_DISPLAY_MODE.load(Ordering::Relaxed);
+            match mode {
+                1 => set_status_line(Some("ROMANIZED LYRICS".to_string())),
+                2 => set_status_line(Some("TRANSLATED LYRICS".to_string())),
+                _ => set_status_line(Some("ORIGINAL LYRICS".to_string())),
+            }
             refresh_ui(None);
             return true;
         }
         "w" | "wrong" => {
             ui_common::stop_lyrics();
             ui_common::clear_lyrics();
+            set_status_line(Some(format!("sorry... stopped lyrics")));
             refresh_ui(None);
             return true;
         }
@@ -562,7 +590,7 @@ async fn handle_global_commands(
                 s[1..].parse::<usize>().unwrap_or(1)
             };
             ui_common::clear_lyrics();
-
+            set_status_line(Some(format!("PLAYING NEXT")));
             for _ in 0..steps {
                 if let Some(track) = current_track {
                     add_to_history(track.clone());
@@ -570,12 +598,13 @@ async fn handle_global_commands(
                 }
 
                 if let Some(track) = queue_next() {
+                    set_status_line(None);
                     *current_track = Some(track.clone());
                     *currently_playing =
                         Some(player::play_file(&track.url, &track.title, music_dir).unwrap());
 
-                    if !config.no_autoplay {
-                        if config.offline_mode {
+                    if !config().no_autoplay {
+                        if config().offline_mode {
                             let exclude = get_excluded_titles();
                             let mut q = SONG_QUEUE.write().unwrap();
                             offline::populate_queue_offline(music_dir, &mut q, &exclude);
@@ -598,13 +627,15 @@ async fn handle_global_commands(
             }
             return true;
         }
-        "b" | "back" => {
+        "p" | "previous" => {
             if let Some(track) = current_track {
                 player::stop_process(currently_playing, &track.title, music_dir);
                 queue_add_front(track.clone());
+                set_status_line(Some(format!("PLAYING PREVIOUS")));
             }
 
             if let Some(prev_track) = get_prev_track() {
+                set_status_line(None);
                 *current_track = Some(prev_track.clone());
                 *currently_playing =
                     Some(player::play_file(&prev_track.url, &prev_track.title, music_dir).unwrap());
@@ -615,7 +646,7 @@ async fn handle_global_commands(
             return true;
         }
         "L" | "library" => {
-            if config.offline_mode {
+            if config().offline_mode || UI_MODE.load(Ordering::Relaxed) == 2 {
                 refresh_ui(None);
                 return true;
             }
@@ -627,22 +658,54 @@ async fn handle_global_commands(
             }
 
             //give rx to library helper
-            if let Err(e) = handle_library_browsing(
-                rx,
-                yt_client,
-                music_dir,
-                current_track,
-                currently_playing,
-                config,
-            )
-            .await
+            if let Err(e) =
+                handle_library_browsing(rx, yt_client, music_dir, current_track, currently_playing)
+                    .await
             {
-                println!("Error in Library: {}", e);
+                set_status_line(Some("Error in Library: {}".to_string()));
             }
 
             refresh_ui(None);
             return true;
         }
+        // "g" | "guess" => {
+        //     use std::sync::atomic::Ordering;
+
+        //     if currently_playing.is_none() {
+        //         set_status_line(Some("NOTHING IS PLAYING".into()));
+        //         return true;
+        //     }
+
+        //     let is_lossless = crate::PLAYING_LOSSLESS.load(Ordering::SeqCst);
+
+        //     set_status_line(Some("Guess format: 1) WEBM  2) FLAC".into()));
+
+        //     if let Ok(input) = rx.recv() {
+        //         let guess = input.trim();
+
+        //         let correct = match guess {
+        //             "1" => !is_lossless,
+        //             "2" => is_lossless,
+        //             _ => {
+        //                 set_status_line(Some("INVALID (Choose 1 or 2)".into()));
+        //                 refresh_ui(title_ref);
+        //                 return true;
+        //             }
+        //         };
+
+        //         if correct {
+        //             set_status_line(Some("CORRECT GUESS!".into()));
+        //         } else {
+        //             let actual = if is_lossless { "FLAC" } else { "WEBM" };
+        //             set_status_line(Some(format!("WRONG! It was {}", actual)));
+        //         }
+
+        //         refresh_ui(title_ref);
+        //         return true;
+        //     }
+        //     set_status_line(Some("NO INPUT RECEIVED".into()));
+        //     true
+        // }
         _ => return false,
     }
 }
@@ -654,7 +717,6 @@ pub async fn handle_song_selection(
     yt_client: &api::YTMusic,
     current_track: &mut Option<Track>,
     currently_playing: &mut Option<Child>,
-    config: &AppConfig,
     playlist_context: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input = selection_input.trim();
@@ -666,30 +728,31 @@ pub async fn handle_song_selection(
 
     if idx >= 1 && idx <= songs_list.len() {
         let selected = &songs_list[idx - 1];
+        let safe_title = selected.title.replace(['/', '\\'], "-");
 
-        let webm = music_dir.join(format!("{}.webm", selected.title));
-        let flac = music_dir.join(format!("{}.flac", selected.title));
+        let webm = music_dir.join(format!("{}.webm", safe_title));
+        let flac = music_dir.join(format!("{}.flac", safe_title));
 
         let src = if flac.exists() {
             flac.to_string_lossy().to_string()
         } else if webm.exists() {
             webm.to_string_lossy().to_string()
         } else {
-            //try flac first if not available offline
             let clean_title = blindly_trim(&selected.title);
             let query = format!("{} {}", clean_title, selected.artists.join(","));
-            match fetch_flac_stream_url(&query).await {
-                Ok(url) => {
-                    println!(":) Playing FLAC stream");
-                    url
-                }
-                Err(_) => {
-                    println!(">_< FLAC not found, falling back to YouTube...");
-                    match yt_client.fetch_stream_url(&selected.video_id).await {
-                        Ok(u) => u,
-                        Err(_) => return Ok(()),
-                    }
-                }
+            let mut final_url = None;
+
+            if config().lossless_mode {
+                set_status_line(Some("Trying to fetch lossless".to_string()));
+                final_url = fetch_flac_stream_url(&query).await.ok();
+            }
+            if final_url.is_none() {
+                set_status_line(Some("Falling back to youtube".to_string()));
+                final_url = yt_client.fetch_stream_url(&selected.video_id).await.ok();
+            }
+            match final_url {
+                Some(url) => url,
+                None => return Ok(()),
             }
         };
 
@@ -709,6 +772,7 @@ pub async fn handle_song_selection(
                 *guard = playlist_context;
             }
             ui_common::clear_lyrics();
+            set_status_line(None);
             *current_track = Some(new_track.clone());
             *currently_playing = Some(player::play_file(
                 &new_track.url,
@@ -716,7 +780,7 @@ pub async fn handle_song_selection(
                 music_dir,
             )?);
 
-            if !config.no_autoplay {
+            if !config().no_autoplay {
                 let yt = yt_client.clone();
                 let vid = selected.video_id.clone();
                 SONG_QUEUE.write().unwrap().clear();
@@ -740,9 +804,8 @@ async fn handle_library_browsing(
     music_dir: &std::path::PathBuf,
     current_track: &mut Option<Track>,
     currently_playing: &mut Option<Child>,
-    config: &AppConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Fetching Library...");
+    set_status_line(Some("Fetching Library...".to_string()));
     let playlists = yt_client.fetch_library_playlists().await?;
     show_playlists(&playlists);
 
@@ -750,10 +813,10 @@ async fn handle_library_browsing(
         let sel = sel_str.trim().parse::<usize>().unwrap_or(0);
         if sel >= 1 && sel <= playlists.len() {
             let selected_playlist = &playlists[sel - 1];
-            println!("Loading '{}'...", selected_playlist.title);
+            set_status_line(Some(format!("Loading '{}'...", selected_playlist.title)));
 
             {
-                println!("Fetching first 100 songs...");
+                set_status_line(Some("Fetching first songs".to_string()));
                 let fetched_songs = yt_client
                     .fetch_playlist_songs(&selected_playlist.playlist_id, 100)
                     .await?;
@@ -764,7 +827,7 @@ async fn handle_library_browsing(
 
             loop {
                 refresh_ui(None);
-                println!(" [n] Next | [p] Prev [b] Back");
+                println!(" [n] Next | [p] Prev ");
 
                 {
                     let songs = LIBRARY_SONG_LIST.read().unwrap();
@@ -789,7 +852,7 @@ async fn handle_library_browsing(
                         if page > 1 {
                             page -= 1;
                         }
-                    } else if what_to_do_now == "b" {
+                    } else if what_to_do_now.trim() == "b" {
                         break;
                     } else if let Ok(num) = what_to_do_now.parse::<usize>() {
                         let selected_song = {
@@ -810,7 +873,6 @@ async fn handle_library_browsing(
                                 yt_client,
                                 current_track,
                                 currently_playing,
-                                config,
                                 Some(selected_playlist.playlist_id.clone()),
                             )
                             .await?;
@@ -943,18 +1005,150 @@ pub async fn queue_auto_add_online(yt: api::YTMusic, id: String) {
 
         // Resolve stream URLs and add to queue
         for (title, video_id) in to_fetch {
-            let final_url = match fetch_flac_stream_url(&title).await {
-                Ok(url) => Some(url),
-                Err(_) => match yt.fetch_stream_url(&video_id).await {
-                    Ok(u) => Some(u),
-                    Err(_) => None,
-                },
-            };
+            let mut final_url = None;
 
+            // Check lossless if enabled
+            if config().lossless_mode {
+                final_url = fetch_flac_stream_url(&title).await.ok();
+            }
+            if final_url.is_none() {
+                final_url = yt.fetch_stream_url(&video_id).await.ok();
+            }
             if let Some(url) = final_url {
                 queue_add(Track::new(title, url, Some(video_id)));
             }
         }
         refresh_ui(None);
     }
+}
+
+pub fn config() -> &'static AppConfig {
+    CONFIG.get().expect("Config is not initialized")
+}
+
+use crossterm::event::{KeyCode, KeyEventKind};
+use std::io::{self, Write};
+use std::sync::mpsc::Sender;
+pub fn spawn_input_handler(tx: Sender<String>) {
+    std::thread::spawn(move || {
+        let _ = crossterm::terminal::enable_raw_mode();
+
+        loop {
+            if let Ok(true) = event::poll(std::time::Duration::from_millis(100)) {
+                if let Ok(ev) = event::read() {
+                    match ev {
+                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            match key.code {
+                                // --- INSTANT SEARCH MODE ---
+                                KeyCode::Char('/') => {
+                                    execute!(io::stdout(), crossterm::cursor::Show).ok();
+                                    let mut query = String::new();
+                                    let prompt = "> ".bright_blue().bold();
+
+                                    loop {
+                                        set_status_line(Some("Search a Song".to_string()));
+                                        print!("\r\x1b[2K{} {}█", prompt, query);
+                                        io::stdout().flush().unwrap();
+
+                                        if let Ok(Event::Key(k)) = event::read() {
+                                            if k.kind != KeyEventKind::Press {
+                                                continue;
+                                            }
+
+                                            match k.code {
+                                                KeyCode::Enter => {
+                                                    if !query.is_empty() {
+                                                        let _ = tx.send(query.clone());
+                                                    }
+                                                    break;
+                                                }
+                                                KeyCode::Esc => {
+                                                    let _ = tx.send("REFRESH_UI".into());
+                                                    break;
+                                                }
+                                                KeyCode::Char(c) => query.push(c),
+                                                KeyCode::Backspace => {
+                                                    query.pop();
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // --- KEYBINDS ---
+                                KeyCode::Esc => {
+                                    let _ = tx.send("b".into());
+                                    let _ = tx.send("REFRESH_UI".into());
+                                }
+
+                                KeyCode::Char(c) if c.is_ascii_digit() => {
+                                    let _ = tx.send(c.to_string());
+                                }
+
+                                KeyCode::Char('L') => {
+                                    let _ = tx.send("L".into());
+                                }
+                                KeyCode::Char(' ') => {
+                                    let _ = tx.send("pause".into());
+                                }
+                                KeyCode::Char('p') => {
+                                    let _ = tx.send("p".into());
+                                }
+                                KeyCode::Char('n') => {
+                                    let _ = tx.send("n".into());
+                                }
+                                KeyCode::Char('v') => {
+                                    let _ = tx.send("v".into());
+                                }
+                                KeyCode::Char('t') => {
+                                    let _ = tx.send("t".into());
+                                }
+                                KeyCode::Char('w') => {
+                                    let _ = tx.send("w".into());
+                                }
+                                KeyCode::Char('r') => {
+                                    let _ = tx.send("r".into());
+                                }
+                                KeyCode::Char('s') => {
+                                    let _ = tx.send("s".into());
+                                }
+                                KeyCode::Char('g') => {
+                                    let _ = tx.send("g".into());
+                                }
+
+                                // Volume + Seeking
+                                KeyCode::Char('+') | KeyCode::Char('=') => {
+                                    let _ = tx.send("+".into());
+                                }
+                                KeyCode::Char('-') => {
+                                    let _ = tx.send("-".into());
+                                }
+                                KeyCode::Right => {
+                                    let _ = tx.send(">10".into());
+                                }
+                                KeyCode::Left => {
+                                    let _ = tx.send("<10".into());
+                                }
+
+                                KeyCode::Char('q') => {
+                                    let _ = crossterm::terminal::disable_raw_mode();
+                                    let _ = tx.send("q".into());
+                                    return;
+                                }
+
+                                _ => {}
+                            }
+                        }
+
+                        Event::Resize(_, _) => {
+                            let _ = tx.send("REFRESH_UI".into());
+                        }
+
+                        _ => {}
+                    }
+                }
+            }
+        }
+    });
 }

@@ -75,12 +75,13 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], toggle: &str) 
         queue!(stdout, cursor::MoveTo(pad as u16, 20), Print(msg)).unwrap();
     }
 
-    let prompt_str = "> ";
+    // let prompt_str = "> ";
 
     queue!(
         stdout,
         cursor::MoveTo(0, 20 + QUEUE_SIZE as u16 + 1),
-        Print(format!("{}", prompt_str.bright_blue().bold())),
+        // Print(format!("{}", prompt_str.bright_blue().bold())),
+        Print("\n"),
         cursor::Hide
     )
     .unwrap();

@@ -42,16 +42,19 @@ pub fn play_file(
         .arg(format!("--input-ipc-server={}", ipc))
         .arg(format!("--volume={}", current_vol));
 
+    let ext = if source.contains(".tidal") || source.ends_with(".flac") {
+        crate::PLAYING_LOSSLESS.store(true, Ordering::SeqCst);
+        "flac"
+    } else {
+        crate::PLAYING_LOSSLESS.store(false, Ordering::SeqCst);
+        "webm"
+    };
     if source.starts_with("http") {
-        let ext = if source.contains("tidal") {
-            crate::PLAYING_LOSSLESS.store(true, Ordering::SeqCst);
-            "flac"
-        } else {
-            crate::PLAYING_LOSSLESS.store(false, Ordering::SeqCst);
-            "webm"
-        };
+        let safe_title = title.replace(['/', '\\'], "-");
 
-        let temp_path = music_dir.join("temp").join(format!("{title}.{ext}"));
+        let temp_path = music_dir
+            .join("temp")
+            .join(format!("{}.{}", safe_title, ext));
 
         cmd.arg(format!("--stream-record={}", temp_path.to_string_lossy()));
     }

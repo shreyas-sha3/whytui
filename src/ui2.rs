@@ -106,7 +106,8 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], toggle: &str) 
         cursor::MoveTo(0, PROMPT_ROW),
         terminal::Clear(ClearType::CurrentLine),
         terminal::Clear(ClearType::FromCursorDown),
-        Print("> ".bright_blue().bold()),
+        // Print("> ".bright_blue().bold()),
+        Print("\n"),
         cursor::Show
     )
     .unwrap();

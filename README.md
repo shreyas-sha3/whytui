@@ -57,7 +57,7 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
 - Enter `q` followed by a number (e.g., `q2`): Add the selected song to the queue.  
 - Press Enter without a number: Retry or cancel the search.
 
-* Commands:
+* Keybinds:
 
   * `p | pause`  → play/pause the song
   * `n | next`  → play next song in the queue (note: `n3` to skip 3 songs)
@@ -78,6 +78,7 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
 * Arguments:
   * `--manual` to disable autoplay
   * `--offline` to just play offline songs
+  * `--lossless` to attempt fetching lossless audio
 
 * Note: Netscape cookies can be added at `$MusicDir/whytui/config/cookies.txt`
 
@@ -92,3 +93,10 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
 - [X] lyrics
 - [ ] reimpliment a fully featured ytmusic api
 - [ ] proper tui using ratatui
+
+
+## CREDITS
+
+- [lyrics](https://lrclib.net)
+- [lossless](https://github.com/uimaxbai/hifi-api)
+- [inspiration](https://github.com/Rigellute/spotify-tui)

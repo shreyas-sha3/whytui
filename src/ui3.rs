@@ -26,7 +26,7 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], _toggle: &str)
     queue!(
         stdout,
         cursor::Hide,
-        cursor::MoveTo(0, rows - 4),
+        cursor::MoveTo(0, rows - 3),
         terminal::Clear(ClearType::FromCursorDown)
     )
     .unwrap();
@@ -38,17 +38,18 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], _toggle: &str)
         "Up Next: ~".to_string()
     };
 
-    let prompt_row = rows.saturating_sub(2);
+    let prompt_row = rows.saturating_sub(1);
 
     queue!(
         stdout,
         cursor::MoveTo(0, prompt_row),
-        Print(format!("{}", "> ".bright_blue().bold())),
+        // Print(format!("{}", "> ".bright_blue().bold())),
+        Print("\n"),
         cursor::Hide
     )
     .unwrap();
 
-    stdout.flush().unwrap();
+    // stdout.flush().unwrap();
 
     if let Some(song_name) = song_name_opt {
         if !song_name.is_empty() {
@@ -94,7 +95,7 @@ fn draw_minimal_ui(
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
     let width_usize = cols as usize;
 
-    let footer_row_up_next = rows.saturating_sub(4);
+    let footer_row_up_next = rows.saturating_sub(3);
 
     let lyric_area_start = 4;
     let lyric_area_end = footer_row_up_next - 1;

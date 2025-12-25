@@ -1,11 +1,12 @@
 use crate::api::{PlaylistDetails, SongDetails, split_title_artist};
 use crate::features::{LrcLine, fetch_synced_lyrics};
-use crate::player;
+use crate::{UI_MODE, player};
 use colored::*;
 use crossterm::{
-    cursor, queue,
+    cursor::{MoveTo, RestorePosition, SavePosition},
+    execute, queue,
     style::Print,
-    terminal::{self, ClearType},
+    terminal::{self, Clear, ClearType},
 };
 use std::io::{Write, stdout};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -20,6 +21,7 @@ pub static TITLE_SCROLL: RwLock<usize> = RwLock::new(0);
 pub static LAST_SCROLL: RwLock<Option<Instant>> = RwLock::new(None);
 
 pub static LYRIC_DISPLAY_MODE: AtomicU8 = AtomicU8::new(0);
+pub static STATUS_LINE: RwLock<String> = RwLock::new(String::new());
 
 pub fn cycle_lyric_display_mode() {
     LYRIC_DISPLAY_MODE
@@ -38,17 +40,71 @@ pub fn clear_lyrics() {
     LYRICS.write().unwrap().clear();
 }
 
-pub fn get_banner_art() -> String {
-    let is_lossless = crate::PLAYING_LOSSLESS.load(Ordering::SeqCst);
+use std::cmp::min;
+use std::io::{self};
+pub fn set_status_line(status: Option<String>) {
+    if UI_MODE.load(Ordering::Relaxed) == 2 {
+        return;
+    }
+    let mut line = STATUS_LINE.write().unwrap();
 
-    let quality_line = if is_lossless {
-        "    ░     ░  ░  FLAC • LOSSLESS AUDIO  ░       ░"
-            .dimmed()
-            .bold()
-            .blink()
+    let global_indent = "                  ";
+    let inner_width = 31;
+
+    let (raw_text, styled_text) = if let Some(s) = status {
+        (s.clone(), s.blue().dimmed().bold())
     } else {
-        "    ░     ░  ░  WEBM • STANDARD AUDIO  ░       ░".dimmed()
+        ("".to_string(), "".blue().dimmed().bold())
     };
+
+    let visible_len = min(raw_text.len(), inner_width);
+    let total_padding = inner_width - visible_len;
+    let pad_l_len = total_padding / 2;
+    let pad_r_len = total_padding - pad_l_len;
+
+    let pad_l = " ".repeat(pad_l_len);
+    let pad_r = " ".repeat(pad_r_len);
+
+    let bottom_spacer = " ".repeat(inner_width);
+
+    let left_art = "        ░   ░".blue().dimmed();
+    let right_art = "░    ░".blue().dimmed();
+
+    execute!(
+        std::io::stdout(),
+        crossterm::cursor::SavePosition,
+        crossterm::cursor::MoveTo(0, 9),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+    )
+    .ok();
+
+    *line = format!(
+        "\r{indent}{l_art}{pl}{text}{pr}{r_art}\r\n{indent}{l_art}{spacer}{r_art}",
+        indent = global_indent,
+        l_art = left_art,
+        r_art = right_art,
+        pl = pad_l,
+        pr = pad_r,
+        text = styled_text,
+        spacer = bottom_spacer
+    );
+
+    print!("{}", *line);
+    std::io::Write::flush(&mut std::io::stdout()).unwrap();
+
+    execute!(std::io::stdout(), crossterm::cursor::RestorePosition).ok();
+}
+
+fn get_padding() -> String {
+    let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
+    let width = cols as usize;
+    let art_width = 54;
+    let padding = width.saturating_sub(art_width) / 2;
+    " ".repeat(padding)
+}
+
+pub fn get_banner_art() -> String {
+    let status_line = crate::PLAYING_LOSSLESS.load(std::sync::atomic::Ordering::SeqCst);
 
     let art = r#"
    █     █░ ██░ ██▓ ██   ██▓ ▄███████▓ █    ██  ██▓
@@ -58,24 +114,19 @@ pub fn get_banner_art() -> String {
   ░░██▒██▓ ░▓█▒░██▓  ░ ██▒▓░   ▒██▒ ░ ▒▒█████▓  ░██░
   ░ ▓░▒ ▒   ▒ ░░▒░▒   ██▒▒▒    ▒ ░░   ░▒▓▒ ▒ ▒  ░▓
     ▒ ░ ░   ▒ ░▒░ ░ ▓██ ░▒░      ░    ░░▒░ ░ ░   ▒ ░
-    ░   ░   ░  ░░ ░ ▒ ▒ ░░     ░       ░░░ ░  ░  ▒ ░
+    ░   ░   ░  ░░ ░ ▒ ▒ ░░      ░      ░░░  ░    ▒ ░
+        ░   ░                               ░    ░
+        ░   ░                               ░    ░
 "#;
 
-    let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
-    let width = cols as usize;
-
-    let art_width = 54;
-    let padding = width.saturating_sub(art_width) / 2;
-    let pad = " ".repeat(padding);
-
+    let pad = get_padding();
     let mut output = art
         .lines()
-        .map(|l| format!("{pad}{l}"))
+        .map(|l| format!("\r{pad}{l}"))
         .collect::<Vec<_>>()
         .join("\n");
 
-    output.push('\n');
-    output.push_str(&format!("{pad}{}", quality_line));
+    let current_status_line = STATUS_LINE.read().unwrap();
 
     output.blue().dimmed().to_string()
 }
@@ -110,12 +161,19 @@ pub fn get_scrolling_text(text: &str, width: usize) -> String {
 }
 
 pub fn show_songs(list: &[SongDetails]) {
-    println!();
+    // Start with a carriage return to reset position
+    print!("\r\n");
     for (i, s) in list.iter().enumerate() {
-        println!("{}. {} [{}]", i + 1, s.title, s.duration.cyan().italic());
+        // Clear current line before printing to prevent overlap
+        print!(
+            "\r\x1b[2K{}. {} [{}]\r\n",
+            i + 1,
+            s.title,
+            s.duration.cyan().italic()
+        );
     }
     print!(
-        "{}",
+        "\r\x1b[2K{}",
         format!("\n~ Select (1-{}): ", list.len())
             .bright_blue()
             .bold()
@@ -125,10 +183,14 @@ pub fn show_songs(list: &[SongDetails]) {
 }
 
 pub fn show_playlists(list: &[PlaylistDetails]) {
-    println!("\n{}", "--- YOUR LIBRARY ---".bold().underline());
+    // Reset cursor to start of line and clear it
+    print!(
+        "\r\x1b[2K\n{}\r\n",
+        "--- YOUR LIBRARY ---".bold().underline()
+    );
     for (i, p) in list.iter().enumerate() {
-        println!(
-            "{}. {} {}",
+        print!(
+            "\r\x1b[2K{}. {} {}\r\n",
             i + 1,
             p.title.bold(),
             if p.count.is_empty() {
@@ -139,7 +201,7 @@ pub fn show_playlists(list: &[PlaylistDetails]) {
         );
     }
     print!(
-        "{}",
+        "\r\x1b[2K{}",
         format!("\n~ Select (1-{}): ", list.len())
             .bright_blue()
             .bold()
@@ -172,7 +234,7 @@ where
                 _ => {
                     *w = vec![LrcLine {
                         timestamp: Duration::from_secs(0),
-                        text: ">_<".dimmed().to_string(),
+                        text: "\t\t>_<".dimmed().to_string(),
                         translation: None,
                         romanized: None,
                     }]
