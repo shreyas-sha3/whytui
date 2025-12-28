@@ -40,6 +40,7 @@ pub struct AppConfig {
     pub offline_mode: bool,
     pub no_autoplay: bool,
     pub lossless_mode: bool,
+    pub game_mode: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -71,6 +72,9 @@ static RECENTLY_PLAYED: RwLock<VecDeque<Track>> = RwLock::new(VecDeque::new());
 const HISTORY_LIMIT: usize = 50;
 //TO KEEP CONSISTENT VOLUME LEVEL ACROSS TRACKS (TO BE READ BY player.rs)
 pub static VOLUME: AtomicI64 = AtomicI64::new(70);
+
+pub static IS_PLAYING: AtomicBool = AtomicBool::new(false);
+pub static IS_LOSSLESS: AtomicBool = AtomicBool::new(false);
 pub static PLAYING_LOSSLESS: AtomicBool = AtomicBool::new(false);
 static VIEW_MODE: RwLock<String> = RwLock::new(String::new());
 static UI_MODE: AtomicUsize = AtomicUsize::new(0);
@@ -91,6 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         offline_mode: args.contains(&"--offline".to_string()),
         no_autoplay: args.contains(&"--manual".to_string()),
         lossless_mode: args.contains(&"--lossless".to_string()),
+        game_mode: args.contains(&"--game".to_string()),
     };
 
     // Set the global OnceLock
@@ -112,7 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     execute!(stdout(), Clear(ClearType::All));
 
     clear_temp(&music_dir);
-    if config().lossless_mode {
+    if config().lossless_mode && !config().offline_mode {
         println!("Finding fastest FLAC server...");
         if let Err(e) = init_api().await {
             println!("FLAC API Init failed: {}", e);
@@ -132,12 +137,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // let (tx, rx) = mpsc::channel::<String>();
     // thread::spawn(move || {
-    //     loop {
-    //         let mut s = String::new();
-    //         if std::io::stdin().read_line(&mut s).is_ok() {
-    //             let _ = tx.send(s.trim().to_string());
-    //         }
-    //     }
+    //      loop {
+    //          let mut s = String::new();
+    //          if std::io::stdin().read_line(&mut s).is_ok() {
+    //              let _ = tx.send(s.trim().to_string());
+    //          }
+    //      }
     // });
     let (tx, rx) = mpsc::channel::<String>();
     spawn_input_handler(tx);
@@ -183,7 +188,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         if let Some(track) = queue_next() {
-            set_status_line(None);
             current_track = Some(track.clone()); //to pass it around to functions like next song
             currently_playing = Some(player::play_file(&track.url, &track.title, &music_dir)?); //object to stop the current song
             refresh_ui(Some(&track.title));
@@ -217,13 +221,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // -------------------------------------------------------------------
     loop {
         // if event::poll(Duration::from_millis(0))? {
-        //     match event::read()? {
-        //         Event::Resize(_, _) => {
-        //             execute!(stdout(), Clear(ClearType::All))?;
-        //             refresh_ui(None);
-        //         }
-        //         _ => {}
-        //     }
+        //      match event::read()? {
+        //          Event::Resize(_, _) => {
+        //              execute!(stdout(), Clear(ClearType::All))?;
+        //              refresh_ui(None);
+        //          }
+        //          _ => {}
+        //      }
         // }
 
         // -------------------------------------------------------------------
@@ -262,7 +266,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // -------------------------------------------------------------------
                 if let Some(track) = queue_next() {
                     //Check queue first - If yes play next in queue
-                    set_status_line(None);
                     current_track = Some(track.clone());
                     currently_playing =
                         Some(player::play_file(&track.url, &track.title, &music_dir)?);
@@ -299,6 +302,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // -------------------------------------------------------------------
                 else {
                     current_track = None;
+                    crate::IS_PLAYING.store(false, Ordering::SeqCst);
                     refresh_ui(Some("Nothing Playing"));
                 }
             }
@@ -318,7 +322,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => {
                 // if nothing sleep for 250 ms for cpu relief (not the best idea)
                 thread::sleep(Duration::from_millis(250));
-                set_status_line(None);
                 continue;
             }
         };
@@ -353,6 +356,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         //         (since search not allowed on offline mode)
         // -------------------------------------------------------------------
         if config().offline_mode {
+            set_status_line(Some("Nope not here".to_string()));
             refresh_ui(None);
             continue;
         }
@@ -460,7 +464,7 @@ async fn handle_global_commands(
     // special commands
     match input {
         "REFRESH_UI" => {
-            execute!(stdout(), Clear(ClearType::All));
+            // execute!(stdout(), Clear(ClearType::All));
             refresh_ui(None);
             return true;
         }
@@ -579,69 +583,57 @@ async fn handle_global_commands(
             refresh_ui(None);
             return true;
         }
-        //next song in queue can also be done as n#
-        s if s == "n"
-            || s == "next"
-            || (s.starts_with('n') && s[1..].chars().all(|c| c.is_ascii_digit())) =>
-        {
-            let steps = if s == "n" || s == "next" {
-                1
-            } else {
-                s[1..].parse::<usize>().unwrap_or(1)
-            };
+
+        "n" | "next" => {
             ui_common::clear_lyrics();
-            set_status_line(Some(format!("PLAYING NEXT")));
-            for _ in 0..steps {
-                if let Some(track) = current_track {
-                    add_to_history(track.clone());
-                    player::stop_process(currently_playing, &track.title, music_dir);
-                }
 
-                if let Some(track) = queue_next() {
-                    set_status_line(None);
-                    *current_track = Some(track.clone());
-                    *currently_playing =
-                        Some(player::play_file(&track.url, &track.title, music_dir).unwrap());
-
-                    if !config().no_autoplay {
-                        if config().offline_mode {
-                            let exclude = get_excluded_titles();
-                            let mut q = SONG_QUEUE.write().unwrap();
-                            offline::populate_queue_offline(music_dir, &mut q, &exclude);
-                        } else if let Some(vid) = &track.video_id {
-                            let yt = yt_client.clone();
-                            let v = vid.clone();
-                            tokio::spawn(async move {
-                                queue_auto_add_online(yt, v).await;
-                            });
-                        }
-                    }
-                    refresh_ui(Some(&track.title));
-                } else {
-                    *current_track = None;
-                    refresh_ui(Some("Nothing Playing"));
-                    break;
-                }
-
-                continue;
+            if let Some(track) = current_track {
+                add_to_history(track.clone());
+                player::stop_process(currently_playing, &track.title, music_dir);
             }
-            return true;
+
+            if let Some(track) = queue_next() {
+                *current_track = Some(track.clone());
+                *currently_playing =
+                    Some(player::play_file(&track.url, &track.title, music_dir).unwrap());
+
+                if !config().no_autoplay {
+                    if config().offline_mode {
+                        let exclude = get_excluded_titles();
+                        let mut q = SONG_QUEUE.write().unwrap();
+                        offline::populate_queue_offline(music_dir, &mut q, &exclude);
+                    } else if let Some(vid) = &track.video_id {
+                        let yt = yt_client.clone();
+                        let v = vid.clone();
+                        tokio::spawn(async move {
+                            queue_auto_add_online(yt, v).await;
+                        });
+                    }
+                }
+
+                refresh_ui(Some(&track.title));
+                set_status_line(Some("PLAYING NEXT".into()));
+            } else {
+                *current_track = None;
+                // refresh_ui(None);
+            }
+
+            true
         }
+
         "p" | "previous" => {
             if let Some(track) = current_track {
-                player::stop_process(currently_playing, &track.title, music_dir);
-                queue_add_front(track.clone());
-                set_status_line(Some(format!("PLAYING PREVIOUS")));
-            }
+                if let Some(prev_track) = get_prev_track() {
+                    player::stop_process(currently_playing, &track.title, music_dir);
+                    queue_add_front(track.clone());
 
-            if let Some(prev_track) = get_prev_track() {
-                set_status_line(None);
-                *current_track = Some(prev_track.clone());
-                *currently_playing =
-                    Some(player::play_file(&prev_track.url, &prev_track.title, music_dir).unwrap());
-                refresh_ui(Some(&prev_track.title));
-            } else {
-                refresh_ui(None);
+                    *current_track = Some(prev_track.clone());
+                    *currently_playing = Some(
+                        player::play_file(&prev_track.url, &prev_track.title, music_dir).unwrap(),
+                    );
+                    refresh_ui(Some(&prev_track.title));
+                    set_status_line(Some(format!("PLAYING PREVIOUS")));
+                }
             }
             return true;
         }
@@ -668,44 +660,44 @@ async fn handle_global_commands(
             refresh_ui(None);
             return true;
         }
-        // "g" | "guess" => {
-        //     use std::sync::atomic::Ordering;
+        "g" | "guess" => {
+            if currently_playing.is_none() || !config().game_mode {
+                set_status_line(Some("NOT NOW!".into()));
+                refresh_ui(None);
+                return true;
+            }
 
-        //     if currently_playing.is_none() {
-        //         set_status_line(Some("NOTHING IS PLAYING".into()));
-        //         return true;
-        //     }
+            print!(
+                "\n\n\n\r  {}",
+                "--- GUESS THE FORMAT --- \n\r  1) WEBM (Lossy)\n\r  2) FLAC (Lossless)"
+            );
 
-        //     let is_lossless = crate::PLAYING_LOSSLESS.load(Ordering::SeqCst);
+            if let Ok(guess_input) = rx.recv() {
+                let guess = guess_input.trim();
+                let is_lossless = PLAYING_LOSSLESS.load(Ordering::SeqCst);
 
-        //     set_status_line(Some("Guess format: 1) WEBM  2) FLAC".into()));
+                let correct = match guess {
+                    "1" => !is_lossless,
+                    "2" => is_lossless,
+                    "-" => {
+                        refresh_ui(None);
+                        set_status_line(Some("Invalid Input".to_string()));
+                        return true;
+                    }
+                    _ => false,
+                };
 
-        //     if let Ok(input) = rx.recv() {
-        //         let guess = input.trim();
+                refresh_ui(None);
+                if correct {
+                    set_status_line(Some("CORRECT GUESS!".into()));
+                } else {
+                    let actual = if is_lossless { "FLAC" } else { "WEBM" };
+                    set_status_line(Some(format!("WRONG! It was {}", actual)));
+                }
+            }
 
-        //         let correct = match guess {
-        //             "1" => !is_lossless,
-        //             "2" => is_lossless,
-        //             _ => {
-        //                 set_status_line(Some("INVALID (Choose 1 or 2)".into()));
-        //                 refresh_ui(title_ref);
-        //                 return true;
-        //             }
-        //         };
-
-        //         if correct {
-        //             set_status_line(Some("CORRECT GUESS!".into()));
-        //         } else {
-        //             let actual = if is_lossless { "FLAC" } else { "WEBM" };
-        //             set_status_line(Some(format!("WRONG! It was {}", actual)));
-        //         }
-
-        //         refresh_ui(title_ref);
-        //         return true;
-        //     }
-        //     set_status_line(Some("NO INPUT RECEIVED".into()));
-        //     true
-        // }
+            return true;
+        }
         _ => return false,
     }
 }
@@ -743,11 +735,15 @@ pub async fn handle_song_selection(
             let mut final_url = None;
 
             if config().lossless_mode {
-                set_status_line(Some("Trying to fetch lossless".to_string()));
+                if !config().game_mode {
+                    set_status_line(Some("Trying to fetch lossless".to_string()));
+                }
                 final_url = fetch_flac_stream_url(&query).await.ok();
             }
             if final_url.is_none() {
-                set_status_line(Some("Falling back to youtube".to_string()));
+                if !config().game_mode {
+                    set_status_line(Some("Falling back to youtube".to_string()));
+                }
                 final_url = yt_client.fetch_stream_url(&selected.video_id).await.ok();
             }
             match final_url {
@@ -772,12 +768,11 @@ pub async fn handle_song_selection(
                 *guard = playlist_context;
             }
             ui_common::clear_lyrics();
-            set_status_line(None);
             *current_track = Some(new_track.clone());
             *currently_playing = Some(player::play_file(
                 &new_track.url,
                 &new_track.title,
-                music_dir,
+                &music_dir,
             )?);
 
             if !config().no_autoplay {
@@ -852,7 +847,7 @@ async fn handle_library_browsing(
                         if page > 1 {
                             page -= 1;
                         }
-                    } else if what_to_do_now.trim() == "b" {
+                    } else if what_to_do_now.trim().is_empty() {
                         break;
                     } else if let Ok(num) = what_to_do_now.parse::<usize>() {
                         let selected_song = {
@@ -1018,6 +1013,8 @@ pub async fn queue_auto_add_online(yt: api::YTMusic, id: String) {
                 queue_add(Track::new(title, url, Some(video_id)));
             }
         }
+        execute!(stdout(), Clear(ClearType::All));
+
         refresh_ui(None);
     }
 }
@@ -1037,109 +1034,119 @@ pub fn spawn_input_handler(tx: Sender<String>) {
             if let Ok(true) = event::poll(std::time::Duration::from_millis(100)) {
                 if let Ok(ev) = event::read() {
                     match ev {
-                        Event::Key(key) if key.kind == KeyEventKind::Press => {
-                            match key.code {
-                                // --- INSTANT SEARCH MODE ---
-                                KeyCode::Char('/') => {
-                                    execute!(io::stdout(), crossterm::cursor::Show).ok();
-                                    let mut query = String::new();
-                                    let prompt = "> ".bright_blue().bold();
+                        Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                            KeyCode::Char('/') => {
+                                execute!(io::stdout(), crossterm::cursor::Show).ok();
+                                let mut query = String::new();
+                                let prompt = "> ".bright_blue().bold();
 
-                                    loop {
-                                        set_status_line(Some("Search a Song".to_string()));
-                                        print!("\r\x1b[2K{} {}█", prompt, query);
-                                        io::stdout().flush().unwrap();
+                                set_status_line(Some("Search a Song".to_string()));
+                                loop {
+                                    print!("\r\x1b[2K{} {}█", prompt, query);
+                                    io::stdout().flush().unwrap();
 
-                                        if let Ok(Event::Key(k)) = event::read() {
-                                            if k.kind != KeyEventKind::Press {
-                                                continue;
+                                    if let Ok(Event::Key(k)) = event::read() {
+                                        if k.kind != KeyEventKind::Press {
+                                            continue;
+                                        }
+
+                                        match k.code {
+                                            KeyCode::Enter => {
+                                                if !query.is_empty() {
+                                                    let _ = tx.send(query.clone());
+                                                }
+                                                break;
+                                            }
+                                            KeyCode::Esc => {
+                                                let _ = tx.send("REFRESH_UI".into());
+                                                break;
+                                            }
+                                            KeyCode::Backspace => {
+                                                query.pop();
                                             }
 
-                                            match k.code {
-                                                KeyCode::Enter => {
-                                                    if !query.is_empty() {
-                                                        let _ = tx.send(query.clone());
-                                                    }
-                                                    break;
-                                                }
-                                                KeyCode::Esc => {
-                                                    let _ = tx.send("REFRESH_UI".into());
-                                                    break;
-                                                }
-                                                KeyCode::Char(c) => query.push(c),
-                                                KeyCode::Backspace => {
-                                                    query.pop();
-                                                }
-                                                _ => {}
-                                            }
+                                            KeyCode::Char(c) => query.push(c),
+                                            _ => {}
                                         }
                                     }
                                 }
-
-                                // --- KEYBINDS ---
-                                KeyCode::Esc => {
-                                    let _ = tx.send("b".into());
-                                    let _ = tx.send("REFRESH_UI".into());
-                                }
-
-                                KeyCode::Char(c) if c.is_ascii_digit() => {
-                                    let _ = tx.send(c.to_string());
-                                }
-
-                                KeyCode::Char('L') => {
-                                    let _ = tx.send("L".into());
-                                }
-                                KeyCode::Char(' ') => {
-                                    let _ = tx.send("pause".into());
-                                }
-                                KeyCode::Char('p') => {
-                                    let _ = tx.send("p".into());
-                                }
-                                KeyCode::Char('n') => {
-                                    let _ = tx.send("n".into());
-                                }
-                                KeyCode::Char('v') => {
-                                    let _ = tx.send("v".into());
-                                }
-                                KeyCode::Char('t') => {
-                                    let _ = tx.send("t".into());
-                                }
-                                KeyCode::Char('w') => {
-                                    let _ = tx.send("w".into());
-                                }
-                                KeyCode::Char('r') => {
-                                    let _ = tx.send("r".into());
-                                }
-                                KeyCode::Char('s') => {
-                                    let _ = tx.send("s".into());
-                                }
-                                KeyCode::Char('g') => {
-                                    let _ = tx.send("g".into());
-                                }
-
-                                // Volume + Seeking
-                                KeyCode::Char('+') | KeyCode::Char('=') => {
-                                    let _ = tx.send("+".into());
-                                }
-                                KeyCode::Char('-') => {
-                                    let _ = tx.send("-".into());
-                                }
-                                KeyCode::Right => {
-                                    let _ = tx.send(">10".into());
-                                }
-                                KeyCode::Left => {
-                                    let _ = tx.send("<10".into());
-                                }
-
-                                KeyCode::Char('q') => {
-                                    let _ = crossterm::terminal::disable_raw_mode();
-                                    let _ = tx.send("q".into());
-                                    return;
-                                }
-
-                                _ => {}
                             }
-                        }
+
+                            KeyCode::Esc => {
+                                let _ = tx.send("".to_string());
+                                let _ = tx.send("REFRESH_UI".into());
+                            }
+
+                            KeyCode::Char(c) if c.is_ascii_digit() => {
+                                let _ = tx.send(c.to_string());
+                            }
+
+                            KeyCode::Char('L') => {
+                                let _ = tx.send("L".into());
+                            }
+                            KeyCode::Char(' ') => {
+                                let _ = tx.send("pause".into());
+                            }
+                            KeyCode::Char('p') => {
+                                let _ = tx.send("p".into());
+                            }
+                            KeyCode::Char('n') => {
+                                let _ = tx.send("n".into());
+                            }
+                            KeyCode::Char('v') => {
+                                let _ = tx.send("v".into());
+                            }
+                            KeyCode::Char('t') => {
+                                let _ = tx.send("t".into());
+                            }
+                            KeyCode::Char('w') => {
+                                let _ = tx.send("w".into());
+                            }
+                            KeyCode::Char('r') => {
+                                let _ = tx.send("r".into());
+                            }
+                            KeyCode::Char('s') => {
+                                let _ = tx.send("s".into());
+                            }
+                            KeyCode::Char('g') => {
+                                let _ = tx.send("g".into());
+                            }
+
+                            KeyCode::Char('+') | KeyCode::Char('=') => {
+                                let _ = tx.send("+".into());
+                            }
+                            KeyCode::Char('-') => {
+                                let _ = tx.send("-".into());
+                            }
+                            KeyCode::Right => {
+                                let _ = tx.send(">5".into());
+                            }
+                            KeyCode::Left => {
+                                let _ = tx.send("<5".into());
+                            }
+
+                            KeyCode::Char('q') => {
+                                let _ = crossterm::terminal::disable_raw_mode();
+                                let _ = tx.send("q".into());
+                                return;
+                            }
+                            KeyCode::Char('!') => {
+                                let _ = tx.send("q1".into());
+                            }
+                            KeyCode::Char('@') => {
+                                let _ = tx.send("q2".into());
+                            }
+                            KeyCode::Char('#') => {
+                                let _ = tx.send("q3".into());
+                            }
+                            KeyCode::Char('$') => {
+                                let _ = tx.send("q4".into());
+                            }
+                            KeyCode::Char('%') => {
+                                let _ = tx.send("q5".into());
+                            }
+                            _ => {}
+                        },
 
                         Event::Resize(_, _) => {
                             let _ = tx.send("REFRESH_UI".into());

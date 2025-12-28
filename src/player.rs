@@ -32,6 +32,8 @@ pub fn play_file(
     let ipc = get_ipc_path();
     let current_vol = crate::VOLUME.load(Ordering::Relaxed);
 
+    crate::IS_PLAYING.store(true, Ordering::SeqCst);
+
     #[cfg(unix)]
     let _ = std::fs::remove_file(&ipc);
 
@@ -64,6 +66,8 @@ pub fn play_file(
 }
 
 pub fn stop_process(proc: &mut Option<Child>, song_name: &str, music_dir: &PathBuf) {
+    crate::IS_PLAYING.store(false, Ordering::SeqCst);
+
     if let Some(mut child) = proc.take() {
         #[cfg(target_os = "windows")]
         {

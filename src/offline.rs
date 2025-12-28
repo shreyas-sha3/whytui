@@ -47,7 +47,7 @@ fn get_all_songs(dir: &Path) -> Vec<PathBuf> {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| p.extension().map_or(false, |e| e == "webm"))
+            .filter(|p| p.extension().map_or(false, |e| e == "webm" || e == "flac"))
             .collect(),
         Err(_) => Vec::new(),
     }

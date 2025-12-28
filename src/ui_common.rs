@@ -23,6 +23,9 @@ pub static LAST_SCROLL: RwLock<Option<Instant>> = RwLock::new(None);
 pub static LYRIC_DISPLAY_MODE: AtomicU8 = AtomicU8::new(0);
 pub static STATUS_LINE: RwLock<String> = RwLock::new(String::new());
 
+pub static BASE_STATUS: RwLock<Option<String>> = RwLock::new(None);
+pub static STATUS_TIMEOUT: RwLock<Option<Instant>> = RwLock::new(None);
+
 pub fn cycle_lyric_display_mode() {
     LYRIC_DISPLAY_MODE
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| Some((x + 1) % 3))
@@ -42,7 +45,9 @@ pub fn clear_lyrics() {
 
 use std::cmp::min;
 use std::io::{self};
-pub fn set_status_line(status: Option<String>) {
+
+// Internal drawer
+fn _draw_status_line(status: Option<String>) {
     if UI_MODE.load(Ordering::Relaxed) == 2 {
         return;
     }
@@ -69,7 +74,6 @@ pub fn set_status_line(status: Option<String>) {
 
     let left_art = "        ░   ░".blue().dimmed();
     let right_art = "░    ░".blue().dimmed();
-
     execute!(
         std::io::stdout(),
         crossterm::cursor::SavePosition,
@@ -93,6 +97,12 @@ pub fn set_status_line(status: Option<String>) {
     std::io::Write::flush(&mut std::io::stdout()).unwrap();
 
     execute!(std::io::stdout(), crossterm::cursor::RestorePosition).ok();
+}
+
+// Public wrapper for temporary status updates
+pub fn set_status_line(status: Option<String>) {
+    *STATUS_TIMEOUT.write().unwrap() = Some(Instant::now() + Duration::from_millis(1000));
+    _draw_status_line(status);
 }
 
 fn get_padding() -> String {
@@ -161,10 +171,8 @@ pub fn get_scrolling_text(text: &str, width: usize) -> String {
 }
 
 pub fn show_songs(list: &[SongDetails]) {
-    // Start with a carriage return to reset position
     print!("\r\n");
     for (i, s) in list.iter().enumerate() {
-        // Clear current line before printing to prevent overlap
         print!(
             "\r\x1b[2K{}. {} [{}]\r\n",
             i + 1,
@@ -183,7 +191,6 @@ pub fn show_songs(list: &[SongDetails]) {
 }
 
 pub fn show_playlists(list: &[PlaylistDetails]) {
-    // Reset cursor to start of line and clear it
     print!(
         "\r\x1b[2K\n{}\r\n",
         "--- YOUR LIBRARY ---".bold().underline()
@@ -232,19 +239,57 @@ where
             match result {
                 Ok(parsed) if !parsed.is_empty() => *w = parsed,
                 _ => {
-                    *w = vec![LrcLine {
-                        timestamp: Duration::from_secs(0),
-                        text: "\t\t>_<".dimmed().to_string(),
-                        translation: None,
-                        romanized: None,
-                    }]
+                    set_status_line(Some("No lyrics found >_<".to_string()));
                 }
             }
         });
     }
 
+    let is_lossless = crate::PLAYING_LOSSLESS.load(std::sync::atomic::Ordering::SeqCst);
+    let is_playing = crate::IS_PLAYING.load(std::sync::atomic::Ordering::SeqCst);
+    let game_mode = crate::config().game_mode;
+
+    let quality_text = if is_playing && !game_mode {
+        if is_lossless {
+            Some(
+                "     FLAC • LOSSLESS AUDIO     "
+                    .dimmed()
+                    .bold()
+                    .to_string(),
+            )
+        } else {
+            Some("     WEBM • STANDARD AUDIO     ".dimmed().to_string())
+        }
+    } else {
+        None
+    };
+
+    // Update Base and Draw immediately
+    *BASE_STATUS.write().unwrap() = quality_text.clone();
+    _draw_status_line(quality_text);
+
     thread::spawn(move || {
         while !stop_clone.load(Ordering::Relaxed) {
+            // Check if we need to revert
+            let timeout_expired = STATUS_TIMEOUT
+                .read()
+                .unwrap()
+                .map(|t| Instant::now() > t)
+                .unwrap_or(false);
+
+            if timeout_expired {
+                *STATUS_TIMEOUT.write().unwrap() = None;
+
+                // Check if still playing to decide what to show
+                let current_playing = crate::IS_PLAYING.load(Ordering::SeqCst);
+                if current_playing {
+                    let base = BASE_STATUS.read().unwrap().clone();
+                    _draw_status_line(base);
+                } else {
+                    _draw_status_line(None);
+                }
+            }
+
             let (curr, tot) = player::get_time_info().unwrap_or((0.0, 0.0));
             let (title, artist) = split_title_artist(&name);
 
@@ -263,6 +308,12 @@ where
             draw_callback(&title, &artist, &name, curr, tot, &lyrics, current_idx);
 
             thread::sleep(Duration::from_millis(500));
+
+            if is_playing {
+                continue;
+            } else {
+                // set_status_line(None);
+            }
         }
     });
 
