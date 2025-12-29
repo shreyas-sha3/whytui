@@ -46,9 +46,9 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
 [oneliner for cmd as administrator]
  
 ## Usage
-- Enter `/` To search a song
-- Type the index to play that song 
-- Hold Shift while typing the number to add that song to queue
+- Press `/` and type to search for a song
+- Type the song’s number to start playing it
+- Hold Shift while typing the number to add it to the queue instead of playing
 
 | Keybind       | Action                                |
 |---------------|----------------------------------------|
@@ -95,5 +95,4 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
 
 - [lyrics](https://lrclib.net)
 - [lossless](https://github.com/uimaxbai/hifi-api)
-- [inspiration](https://github.com/Rigellute/spotify-tui)
-- [inspiration](https://github.com/ravachol/kew)
+- Inspirations: [spotify-tui](https://github.com/Rigellute/spotify-tui) [kew](https://github.com/ravachol/kew)
