@@ -193,7 +193,7 @@ fn draw_ui1_status(
         cursor::MoveTo(next_lyric_pad as u16, STATUS_LINE_ROW + 4),
         terminal::Clear(ClearType::CurrentLine),
         Print(next_text.dimmed().italic()),
-        cursor::MoveTo(next_lyric_pad as u16, STATUS_LINE_ROW + 4),
+        cursor::MoveTo(next_lyric_pad as u16, STATUS_LINE_ROW + 5),
         terminal::Clear(ClearType::CurrentLine),
         cursor::RestorePosition,
         cursor::Hide
