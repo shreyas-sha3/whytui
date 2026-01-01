@@ -14,6 +14,7 @@ use crate::{api::SongDetails, ui3::blindly_trim};
 use crate::{
     flac::fetch_flac_stream_url,
     flac::init_api,
+    offline::get_excluded_titles,
     ui1::{show_playlists, show_songs},
 };
 use colored::*;
@@ -83,6 +84,8 @@ static UI_MODE: AtomicUsize = AtomicUsize::new(0);
 static LIBRARY_SONG_LIST: RwLock<Vec<SongDetails>> = RwLock::new(Vec::new());
 //CONTAINS PLAYLIST ID SO AUTOPLAY CAN FETCH FROM THE SAME LIBRARY
 static PLAYING_FROM_LIBRARY: RwLock<Option<String>> = RwLock::new(None);
+
+pub static LYRIC_OFFSET: AtomicI64 = AtomicI64::new(0);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -204,10 +207,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .fetch_account_name()
             .await
             .unwrap_or("Error".to_string());
-        set_status_line(Some(format!("Wassup {}", user_status)));
 
-        let login_message = format!("\nNothing Playing");
+        let login_message = format!("Nothing Playing");
         refresh_ui(Some(&login_message));
+        set_status_line(Some(format!("Wassup {}", user_status)));
     }
 
     //
@@ -466,6 +469,7 @@ async fn handle_global_commands(
         "REFRESH_UI" => {
             // execute!(stdout(), Clear(ClearType::All));
             refresh_ui(None);
+            set_status_line(None);
             return true;
         }
         "q" | "quit" => {
@@ -492,12 +496,26 @@ async fn handle_global_commands(
             return true;
         }
         s if s == "+" || s == "-" => {
-            let delta: i64 = if s == "+" { 5 } else { -5 };
+            let mut delta: i64 = if s == "+" { 5 } else { -5 };
+
+            while let Ok(next_input) = rx.try_recv() {
+                if next_input == "+" {
+                    delta += 5;
+                } else if next_input == "-" {
+                    delta -= 5;
+                } else {
+                    break;
+                }
+            }
+
             let current = VOLUME.load(Ordering::Relaxed);
             let new_vol = (current + delta).clamp(0, 150);
             VOLUME.store(new_vol, Ordering::Relaxed);
+
             player::vol_change(delta);
+
             set_status_line(Some(format!("VOLUME {}", new_vol)));
+
             return true;
         }
 
@@ -698,6 +716,27 @@ async fn handle_global_commands(
 
             return true;
         }
+        s if s == "[" || s == "]" => {
+            let mut delta: i64 = if s == "]" { 100 } else { -100 };
+
+            while let Ok(next_input) = rx.try_recv() {
+                if next_input == "]" {
+                    delta += 100;
+                } else if next_input == "[" {
+                    delta -= 100;
+                } else {
+                    break;
+                }
+            }
+
+            let current = LYRIC_OFFSET.load(Ordering::Relaxed);
+            let new_offset = current + delta;
+            LYRIC_OFFSET.store(new_offset, Ordering::Relaxed);
+
+            set_status_line(Some(format!("LYRICS OFFSET {}", new_offset)));
+
+            return true;
+        }
         _ => return false,
     }
 }
@@ -730,7 +769,10 @@ pub async fn handle_song_selection(
         } else if webm.exists() {
             webm.to_string_lossy().to_string()
         } else {
-            let clean_title = blindly_trim(&selected.title);
+            let clean_title =
+                if_title_contains_non_english_and_other_language_script_return_only_english_part(
+                    &selected.title,
+                );
             let query = format!("{} {}", clean_title, selected.artists.join(","));
             let mut final_url = None;
 
@@ -944,17 +986,17 @@ fn queue_next() -> Option<Track> {
     }
 }
 
-fn get_excluded_titles() -> Vec<String> {
-    let mut titles = Vec::new();
-    let history = RECENTLY_PLAYED.read().unwrap();
-    let queue = SONG_QUEUE.read().unwrap();
-    titles.extend(history.iter().map(|t| t.title.clone()));
-    titles.extend(queue.iter().map(|t| t.title.clone()));
-    titles
+fn if_title_contains_non_english_and_other_language_script_return_only_english_part(
+    title: &str,
+) -> String {
+    let ascii_only: String = title.chars().filter(|c| c.is_ascii()).collect();
+    ascii_only
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ")
 }
 
 pub async fn queue_auto_add_online(yt: api::YTMusic, id: String) {
-    //check if queue is almost over
     let needs_songs = {
         let q = SONG_QUEUE.read().unwrap();
         q.len() < 2
@@ -1084,6 +1126,12 @@ pub fn spawn_input_handler(tx: Sender<String>) {
                             KeyCode::Char('L') => {
                                 let _ = tx.send("L".into());
                             }
+                            KeyCode::Char('l') => {
+                                let _ = tx.send("l".into());
+                            }
+                            KeyCode::Char('u') => {
+                                let _ = tx.send("u".into());
+                            }
                             KeyCode::Char(' ') => {
                                 let _ = tx.send("pause".into());
                             }
@@ -1118,6 +1166,12 @@ pub fn spawn_input_handler(tx: Sender<String>) {
                             KeyCode::Char('-') => {
                                 let _ = tx.send("-".into());
                             }
+                            KeyCode::Char('[') | KeyCode::Char('=') => {
+                                let _ = tx.send("[".into());
+                            }
+                            KeyCode::Char(']') => {
+                                let _ = tx.send("]".into());
+                            }
                             KeyCode::Right => {
                                 let _ = tx.send(">5".into());
                             }
@@ -1139,7 +1193,7 @@ pub fn spawn_input_handler(tx: Sender<String>) {
                             KeyCode::Char('#') => {
                                 let _ = tx.send("q3".into());
                             }
-                            KeyCode::Char('$') => {
+                            KeyCode::Char('$') | KeyCode::Char('€') => {
                                 let _ = tx.send("q4".into());
                             }
                             KeyCode::Char('%') => {
@@ -1149,6 +1203,7 @@ pub fn spawn_input_handler(tx: Sender<String>) {
                         },
 
                         Event::Resize(_, _) => {
+                            execute!(stdout(), Clear(ClearType::All));
                             let _ = tx.send("REFRESH_UI".into());
                         }
 

@@ -25,44 +25,48 @@ impl LrcLine {
         }
     }
 }
+
+fn if_title_contains_non_english_and_other_language_script_return_only_english_part(
+    title: &str,
+) -> String {
+    let ascii_only: String = title.chars().filter(|c| c.is_ascii()).collect();
+    ascii_only
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ")
+}
+
 pub async fn fetch_synced_lyrics(
     title_artist: &str,
-    duration_secs: u32,
 ) -> Result<Vec<LrcLine>, Box<dyn std::error::Error + Send + Sync>> {
     let (title, artist) = split_title_artist(title_artist);
     let client = Client::new();
-
     let mut search_urls = Vec::new();
-
     let clean_title = blindly_trim(&title);
+
     for individual_artist in artist.split(',').take(2) {
         let trimmed_artist = individual_artist.trim();
-
         if !trimmed_artist.is_empty() {
             let first_word = trimmed_artist
                 .split_whitespace()
                 .next()
                 .unwrap_or(trimmed_artist);
 
+            // Path 1: /get (Direct Object)
             search_urls.push(format!(
-                "https://lrclib.net/api/search?track_name={}&artist_name={}&duration={}",
+                "https://lrclib.net/api/get?track_name={}&artist_name={}",
+                urlencoding::encode(&if_title_contains_non_english_and_other_language_script_return_only_english_part(&title)),
+                urlencoding::encode(first_word),
+            ));
+
+            // Path 2: /search (Array)
+            search_urls.push(format!(
+                "https://lrclib.net/api/search?track_name={}&artist_name={}",
                 urlencoding::encode(&clean_title),
                 urlencoding::encode(first_word),
-                duration_secs
             ));
         }
     }
-
-    search_urls.push(format!(
-        "https://lrclib.net/api/search?track_name={}&duration={}",
-        urlencoding::encode(clean_title),
-        duration_secs
-    ));
-
-    // search_urls.push(format!(
-    //     "https://lrclib.net/api/search?q={}",
-    //     urlencoding::encode(title_artist)
-    // ));
 
     for url in search_urls {
         if let Ok(resp) = client.get(&url).send().await {
@@ -71,19 +75,28 @@ pub async fn fetch_synced_lyrics(
             }
 
             if let Ok(json) = resp.json::<Value>().await {
+                // for /search
                 if let Some(arr) = json.as_array() {
                     for entry in arr {
                         if let Some(sync) = entry["syncedLyrics"].as_str() {
                             if !sync.trim().is_empty() {
                                 let mut lines = parse_lrc(sync);
-
                                 if !is_mostly_english(&lines) {
                                     let _ = romanize_lyrics_google(&client, &mut lines).await;
                                 }
-
                                 return Ok(lines);
                             }
                         }
+                    }
+                }
+                //for /get
+                else if let Some(sync) = json["syncedLyrics"].as_str() {
+                    if !sync.trim().is_empty() {
+                        let mut lines = parse_lrc(sync);
+                        if !is_mostly_english(&lines) {
+                            let _ = romanize_lyrics_google(&client, &mut lines).await;
+                        }
+                        return Ok(lines);
                     }
                 }
             }

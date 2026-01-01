@@ -62,3 +62,12 @@ fn path_to_track(path: PathBuf) -> Track {
     let url = path.to_string_lossy().to_string();
     Track::new(title, url, None)
 }
+
+pub fn get_excluded_titles() -> Vec<String> {
+    let mut titles = Vec::new();
+    let history = crate::RECENTLY_PLAYED.read().unwrap();
+    let queue = crate::SONG_QUEUE.read().unwrap();
+    titles.extend(history.iter().map(|t| t.title.clone()));
+    titles.extend(queue.iter().map(|t| t.title.clone()));
+    titles
+}

@@ -58,6 +58,7 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
 | `p`           | Play previous song in the queue        |
 | `←`   `→`     | Seek 5 seconds                         |
 | `-`   `+`     | Change volume by 5%                    |
+| `[`   `]`     | Offset lyric by 100ms                  |
 | `c`           | Clear the queue                        |
 | `r`           | Toggle recently played                 |
 | `v`           | Toggle display modes                   |

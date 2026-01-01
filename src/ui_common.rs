@@ -1,7 +1,8 @@
 use crate::api::{PlaylistDetails, SongDetails, split_title_artist};
 use crate::features::{LrcLine, fetch_synced_lyrics};
-use crate::{UI_MODE, player};
+use crate::{LYRIC_OFFSET, UI_MODE, player};
 use colored::*;
+use core::time;
 use crossterm::{
     cursor::{MoveTo, RestorePosition, SavePosition},
     execute, queue,
@@ -44,16 +45,14 @@ pub fn clear_lyrics() {
 }
 
 use std::cmp::min;
-use std::io::{self};
 
-// Internal drawer
 fn _draw_status_line(status: Option<String>) {
     if UI_MODE.load(Ordering::Relaxed) == 2 {
         return;
     }
     let mut line = STATUS_LINE.write().unwrap();
 
-    let global_indent = "                  ";
+    let global_indent = get_padding(50);
     let inner_width = 31;
 
     let (raw_text, styled_text) = if let Some(s) = status {
@@ -72,8 +71,8 @@ fn _draw_status_line(status: Option<String>) {
 
     let bottom_spacer = " ".repeat(inner_width);
 
-    let left_art = "        ░   ░".blue().dimmed();
-    let right_art = "░    ░".blue().dimmed();
+    let left_art = "      ░   ░".blue().dimmed();
+    let right_art = " ░   ░".blue().dimmed();
     execute!(
         std::io::stdout(),
         crossterm::cursor::SavePosition,
@@ -105,11 +104,10 @@ pub fn set_status_line(status: Option<String>) {
     _draw_status_line(status);
 }
 
-fn get_padding() -> String {
+fn get_padding(content_width: usize) -> String {
     let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
-    let width = cols as usize;
-    let art_width = 54;
-    let padding = width.saturating_sub(art_width) / 2;
+    let term_width = cols as usize;
+    let padding = term_width.saturating_sub(content_width) / 2;
     " ".repeat(padding)
 }
 
@@ -124,12 +122,12 @@ pub fn get_banner_art() -> String {
   ░░██▒██▓ ░▓█▒░██▓  ░ ██▒▓░   ▒██▒ ░ ▒▒█████▓  ░██░
   ░ ▓░▒ ▒   ▒ ░░▒░▒   ██▒▒▒    ▒ ░░   ░▒▓▒ ▒ ▒  ░▓
     ▒ ░ ░   ▒ ░▒░ ░ ▓██ ░▒░      ░    ░░▒░ ░ ░   ▒ ░
-    ░   ░   ░  ░░ ░ ▒ ▒ ░░      ░      ░░░  ░    ▒ ░
-        ░   ░                               ░    ░
-        ░   ░                               ░    ░
+    ░   ░   ░  ░░ ░ ▒ ▒ ░░      ░      ░░░   ░   ▒ ░
+        ░   ░                                ░   ░
+        ░   ░                                ░   ░
 "#;
 
-    let pad = get_padding();
+    let pad = get_padding(54);
     let mut output = art
         .lines()
         .map(|l| format!("\r{pad}{l}"))
@@ -227,11 +225,10 @@ where
     if name != "Nothing Playing" {
         let song_name = name.clone();
         tokio::spawn(async move {
-            let (_, tot) = player::get_time_info().unwrap_or((0.0, 0.0));
-            let duration_secs = tot as u32;
-            let result = fetch_synced_lyrics(&song_name, duration_secs).await;
+            let result = fetch_synced_lyrics(&song_name).await;
 
             if *CURRENT_LYRIC_SONG.read().unwrap() != song_name {
+                LYRIC_OFFSET.store(0, Ordering::Relaxed);
                 LYRICS.write().unwrap().clear();
                 return;
             }
@@ -264,13 +261,11 @@ where
         None
     };
 
-    // Update Base and Draw immediately
     *BASE_STATUS.write().unwrap() = quality_text.clone();
     _draw_status_line(quality_text);
 
     thread::spawn(move || {
         while !stop_clone.load(Ordering::Relaxed) {
-            // Check if we need to revert
             let timeout_expired = STATUS_TIMEOUT
                 .read()
                 .unwrap()
@@ -280,7 +275,6 @@ where
             if timeout_expired {
                 *STATUS_TIMEOUT.write().unwrap() = None;
 
-                // Check if still playing to decide what to show
                 let current_playing = crate::IS_PLAYING.load(Ordering::SeqCst);
                 if current_playing {
                     let base = BASE_STATUS.read().unwrap().clone();
@@ -298,7 +292,8 @@ where
 
             for (i, l) in lyrics.iter().enumerate() {
                 let ts = dur_to_secs(l.timestamp);
-                if curr + 0.249 >= ts {
+                let offset_secs = LYRIC_OFFSET.load(Ordering::Relaxed) as f64 / 1000.0;
+                if curr + 0.149 + offset_secs >= ts {
                     current_idx = i;
                 } else {
                     break;
@@ -307,7 +302,7 @@ where
 
             draw_callback(&title, &artist, &name, curr, tot, &lyrics, current_idx);
 
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_millis(300));
 
             if is_playing {
                 continue;
