@@ -60,7 +60,15 @@ fn path_to_track(path: PathBuf) -> Track {
         .to_string_lossy()
         .to_string();
     let url = path.to_string_lossy().to_string();
-    Track::new(title, url, None)
+    Track::new(
+        title,
+        vec!["Local File".to_string()],
+        "Offline Library".to_string(),
+        "idk".to_string(),
+        None,
+        None,
+        url,
+    )
 }
 
 pub fn get_excluded_titles() -> Vec<String> {

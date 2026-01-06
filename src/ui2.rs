@@ -1,4 +1,5 @@
-use crate::api::split_title_artist;
+use crate::Track;
+use crate::api::{SongDetails, split_title_artist};
 use crate::ui_common::{self, *};
 use colored::*;
 use crossterm::{
@@ -16,13 +17,11 @@ const CONTENT_START_ROW: u16 = 17;
 const QUEUE_SIZE: usize = 6;
 const PROMPT_ROW: u16 = CONTENT_START_ROW + (QUEUE_SIZE as u16) + 1;
 
-pub use crate::ui_common::{show_playlists, show_songs, stop_lyrics};
-
 fn get_visual_width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
-pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], toggle: &str) {
+pub fn load_banner(track_opt: Option<&Track>, queue: &[String], toggle: &str) {
     let mut stdout = stdout();
     let (term_cols, _) = terminal::size().unwrap_or((80, 24));
 
@@ -108,23 +107,26 @@ pub fn load_banner(song_name_opt: Option<&str>, queue: &[String], toggle: &str) 
         terminal::Clear(ClearType::FromCursorDown),
         // Print("> ".bright_blue().bold()),
         Print("\n"),
-        cursor::Show
+        cursor::Hide
     )
     .unwrap();
     stdout.flush().unwrap();
 
-    if let Some(song_name) = song_name_opt {
-        if !song_name.is_empty() {
+    if let Some(track) = track_opt {
+        if !track.title.is_empty() {
             let mut current_song_guard = CURRENT_LYRIC_SONG.write().unwrap();
-            if *current_song_guard != song_name {
-                *current_song_guard = song_name.to_string();
+
+            if *current_song_guard != track.title {
+                *current_song_guard = track.title.clone();
 
                 let mut monitor_guard = SONG_MONITOR.write().unwrap();
+
                 if let Some(stop_signal) = monitor_guard.take() {
                     stop_signal.store(true, Ordering::Relaxed);
                 }
 
-                let new_stop = start_monitor_thread(song_name.to_string(), draw_ui2_status);
+                let new_stop = start_monitor_thread(track.clone(), draw_ui2_status);
+
                 *monitor_guard = Some(new_stop);
             }
         }

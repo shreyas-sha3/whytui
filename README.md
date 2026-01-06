@@ -67,6 +67,7 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
 | `w`           | Disable lyrics for current song        |
 | `L`           | Show YouTube Music libraries           |
 | `l`           | Like the currently playing song        |
+| `a`           | Add currenly playing song to playlist  |
 | `s`           | Stop current song                      |
 | `q`           | Quit the application                   |
 

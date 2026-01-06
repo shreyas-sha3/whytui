@@ -8,9 +8,9 @@ mod ui2;
 mod ui3;
 mod ui_common;
 
+use crate::api::SongDetails;
 use crate::player::clear_temp;
 use crate::ui_common::set_status_line;
-use crate::{api::SongDetails, ui3::blindly_trim};
 use crate::{
     flac::fetch_flac_stream_url,
     flac::init_api,
@@ -47,17 +47,45 @@ pub struct AppConfig {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Track {
     pub title: String,
-    pub url: String,
+    pub duration: String,
+    pub artists: Vec<String>,
+    pub album: String,
+    pub thumbnail_url: Option<String>,
     pub video_id: Option<String>,
+    pub url: String,
 }
 
 impl Track {
-    pub fn new(title: String, url: String, video_id: Option<String>) -> Self {
+    pub fn new(
+        title: String,
+        artists: Vec<String>,
+        album: String,
+        duration: String,
+        thumbnail_url: Option<String>,
+        video_id: Option<String>,
+        url: String,
+    ) -> Self {
         Self {
             title,
-            url,
+            artists,
+            album,
+            duration,
+            thumbnail_url,
             video_id,
+            url,
         }
+    }
+
+    pub fn dummy() -> Self {
+        Self::new(
+            "Nothing Playing".to_string(), // title
+            vec!["~".to_string()],         // artists (Vec<String>)
+            "".to_string(),                // album
+            "0:00".to_string(),            // duration
+            None,                          // thumbnail_url
+            None,                          // video_id
+            "".to_string(),                // url
+        )
     }
 }
 
@@ -67,8 +95,8 @@ impl Track {
 //
 static CONFIG: OnceLock<AppConfig> = OnceLock::new();
 static SONG_QUEUE: RwLock<Vec<Track>> = RwLock::new(Vec::new());
-// HOLDS just VIDEO ID of related songs upto 50 songs. SONG_QUEUE is populated by fetching urls from this list
-static RELATED_SONG_LIST: RwLock<Vec<(String, String)>> = RwLock::new(Vec::new());
+// STORES ALL DETAILS OF UPCOMING SONGS
+static RELATED_SONG_LIST: RwLock<Vec<api::SongDetails>> = RwLock::new(Vec::new());
 static RECENTLY_PLAYED: RwLock<VecDeque<Track>> = RwLock::new(VecDeque::new());
 const HISTORY_LIMIT: usize = 50;
 //TO KEEP CONSISTENT VOLUME LEVEL ACROSS TRACKS (TO BE READ BY player.rs)
@@ -193,10 +221,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(track) = queue_next() {
             current_track = Some(track.clone()); //to pass it around to functions like next song
             currently_playing = Some(player::play_file(&track.url, &track.title, &music_dir)?); //object to stop the current song
-            refresh_ui(Some(&track.title));
+            refresh_ui(Some(&track));
         } else {
             set_status_line(Some(format!("No local songs found!")));
-            refresh_ui(Some("Nothing Playing"));
+            refresh_ui(Some(&Track::dummy()));
+            // refresh_ui(None);
         }
     }
     // ----------------------------------------------------------------------------------
@@ -208,8 +237,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .unwrap_or("Error".to_string());
 
-        let login_message = format!("Nothing Playing");
-        refresh_ui(Some(&login_message));
+        refresh_ui(Some(&Track::dummy()));
         set_status_line(Some(format!("Wassup {}", user_status)));
     }
 
@@ -298,7 +326,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             });
                         }
                     }
-                    refresh_ui(Some(&track.title));
+                    refresh_ui(Some(&track));
                 }
                 // -------------------------------------------------------------------
                 // CASE 2.1 : IF AUTOPLAY IS DISABLED (JUST STOP PLAYBACK)
@@ -306,7 +334,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 else {
                     current_track = None;
                     crate::IS_PLAYING.store(false, Ordering::SeqCst);
-                    refresh_ui(Some("Nothing Playing"));
+                    refresh_ui(Some(&Track::dummy()));
                 }
             }
         }
@@ -452,7 +480,7 @@ async fn handle_global_commands(
     currently_playing: &mut Option<Child>,
     music_dir: &std::path::PathBuf,
 ) -> bool {
-    let title_ref = current_track.as_ref().map(|t| t.title.as_str()); //now playing song title to pass to refresh_ui
+    // let title_ref = current_track.as_ref().map(|t| t.title.as_str()); //now playing song title to pass to refresh_ui
     let current_mode = UI_MODE.load(Ordering::Relaxed); //current ui mode
 
     // Seek check
@@ -486,8 +514,8 @@ async fn handle_global_commands(
                 player::stop_process(currently_playing, &track.title, music_dir);
             }
             *current_track = None;
+            refresh_ui(None);
             set_status_line(Some(format!("STOPPED SONG")));
-            refresh_ui(Some("Nothing Playing"));
             return true;
         }
         "c" | "clear" => {
@@ -549,6 +577,40 @@ async fn handle_global_commands(
             refresh_ui(None);
             return true;
         }
+        "a" | "add" => {
+            if let Some(track) = current_track {
+                if let Some(vid) = &track.video_id {
+                    let yt = yt_client.clone();
+                    let video_id = vid.clone();
+
+                    // Fetch playlists (Awaited properly)
+                    if let Ok(playlists) = yt_client.fetch_library_playlists().await {
+                        show_playlists(&playlists);
+
+                        // If rx is a standard mpsc receiver, this blocks the UI thread!
+                        // If it is tokio mpsc, it needs .await
+                        if let Ok(sel_str) = rx.recv() {
+                            let sel = sel_str.trim().parse::<usize>().unwrap_or(0);
+                            if sel >= 1 && sel <= playlists.len() {
+                                let selected_playlist_id = playlists[sel - 1].playlist_id.clone();
+
+                                tokio::spawn(async move {
+                                    match yt.add_to_playlist(&selected_playlist_id, &video_id).await
+                                    {
+                                        Ok(_) => {
+                                            set_status_line(Some("Added to Playlist!".to_string()))
+                                        }
+                                        Err(e) => set_status_line(Some(format!(":( Error: {}", e))),
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            refresh_ui(None);
+            return true;
+        }
         "u" | "user" => {
             let user_status = yt_client
                 .fetch_account_name()
@@ -584,9 +646,9 @@ async fn handle_global_commands(
             UI_MODE.store(next_ui_mode, Ordering::Relaxed);
 
             execute!(stdout(), Clear(ClearType::All));
-
-            refresh_ui(title_ref);
-
+            if let Some(track) = current_track {
+                refresh_ui(Some(&track));
+            }
             return true;
         }
         "r" | "recents" => {
@@ -629,7 +691,7 @@ async fn handle_global_commands(
                     }
                 }
 
-                refresh_ui(Some(&track.title));
+                refresh_ui(Some(&track));
                 set_status_line(Some("PLAYING NEXT".into()));
             } else {
                 *current_track = None;
@@ -649,7 +711,7 @@ async fn handle_global_commands(
                     *currently_playing = Some(
                         player::play_file(&prev_track.url, &prev_track.title, music_dir).unwrap(),
                     );
-                    refresh_ui(Some(&prev_track.title));
+                    refresh_ui(Some(&prev_track));
                     set_status_line(Some(format!("PLAYING PREVIOUS")));
                 }
             }
@@ -780,11 +842,11 @@ pub async fn handle_song_selection(
                 if !config().game_mode {
                     set_status_line(Some("Trying to fetch lossless".to_string()));
                 }
-                final_url = fetch_flac_stream_url(&query).await.ok();
+                final_url = fetch_flac_stream_url(&query, &selected.duration).await.ok();
             }
             if final_url.is_none() {
                 if !config().game_mode {
-                    set_status_line(Some("Falling back to youtube".to_string()));
+                    set_status_line(Some("Fetching from youtube".to_string()));
                 }
                 final_url = yt_client.fetch_stream_url(&selected.video_id).await.ok();
             }
@@ -794,7 +856,15 @@ pub async fn handle_song_selection(
             }
         };
 
-        let new_track = Track::new(selected.title.clone(), src, Some(selected.video_id.clone()));
+        let new_track = Track::new(
+            selected.title.clone(),
+            selected.artists.clone(),
+            selected.album.clone(),
+            selected.duration.clone(),
+            selected.thumbnail_url.clone(),
+            Some(selected.video_id.clone()),
+            src,
+        );
 
         if is_queue {
             queue_add_front(new_track);
@@ -826,7 +896,7 @@ pub async fn handle_song_selection(
                     queue_auto_add_online(yt, vid).await;
                 });
             }
-            refresh_ui(Some(&new_track.title));
+            refresh_ui(Some(&new_track));
         }
     } else {
         refresh_ui(None);
@@ -928,7 +998,7 @@ async fn handle_library_browsing(
 /// QUEUE & MPV IPC & PLAYBACK
 /// -------------------------------------------------------------------
 
-fn refresh_ui(song_name: Option<&str>) {
+fn refresh_ui(track_details: Option<&Track>) {
     let mode = VIEW_MODE.read().unwrap().clone();
     let ui_mode = UI_MODE.load(Ordering::Relaxed);
     // prepare data to send
@@ -941,11 +1011,11 @@ fn refresh_ui(song_name: Option<&str>) {
     };
 
     if ui_mode == 0 {
-        ui1::load_banner(song_name, &titles, &mode);
+        ui1::load_banner(track_details, &titles, &mode);
     } else if ui_mode == 1 {
-        ui2::load_banner(song_name, &titles, &mode);
+        ui2::load_banner(track_details, &titles, &mode);
     } else if ui_mode == 2 {
-        ui3::load_banner(song_name, &titles, &mode);
+        ui3::load_banner(track_details, &titles, &mode);
     }
 }
 
@@ -1003,7 +1073,7 @@ pub async fn queue_auto_add_online(yt: api::YTMusic, id: String) {
     };
 
     if needs_songs {
-        // check if saved related videoIDs are exhausted
+        // check if saved related songs are exhausted
         let cache_empty = {
             let c = RELATED_SONG_LIST.read().unwrap();
             c.is_empty()
@@ -1014,19 +1084,19 @@ pub async fn queue_auto_add_online(yt: api::YTMusic, id: String) {
                 let guard = PLAYING_FROM_LIBRARY.read().unwrap();
                 guard.clone()
             };
+
             if let Ok(related) = yt
                 .fetch_related_songs(&id, playlist_context.as_deref(), 50)
                 .await
             {
-                // println!("\n\nLooking for similar songs...");
                 let mut c = RELATED_SONG_LIST.write().unwrap();
                 for song in related {
-                    c.push((song.title, song.video_id));
+                    c.push(song);
                 }
             }
         }
 
-        //cannot hold lock during await :(  So extra vec
+        // Cannot hold lock during await, so move items to a local vec
         let mut to_fetch = Vec::new();
         {
             let mut c = RELATED_SONG_LIST.write().unwrap();
@@ -1041,21 +1111,35 @@ pub async fn queue_auto_add_online(yt: api::YTMusic, id: String) {
         }
 
         // Resolve stream URLs and add to queue
-        for (title, video_id) in to_fetch {
+        for details in to_fetch {
             let mut final_url = None;
 
             // Check lossless if enabled
             if config().lossless_mode {
-                final_url = fetch_flac_stream_url(&title).await.ok();
+                let clean_title =
+                    if_title_contains_non_english_and_other_language_script_return_only_english_part(
+                        &details.title,
+                    );
+                let query = format!("{} {}", clean_title, details.artists.join(" "));
+                final_url = fetch_flac_stream_url(&query, &details.duration).await.ok();
             }
+
             if final_url.is_none() {
-                final_url = yt.fetch_stream_url(&video_id).await.ok();
+                final_url = yt.fetch_stream_url(&details.video_id).await.ok();
             }
+
             if let Some(url) = final_url {
-                queue_add(Track::new(title, url, Some(video_id)));
+                queue_add(Track::new(
+                    details.title,
+                    details.artists,
+                    details.album,
+                    details.duration,
+                    details.thumbnail_url,
+                    Some(details.video_id),
+                    url,
+                ));
             }
         }
-        execute!(stdout(), Clear(ClearType::All));
 
         refresh_ui(None);
     }
@@ -1129,6 +1213,9 @@ pub fn spawn_input_handler(tx: Sender<String>) {
                             KeyCode::Char('l') => {
                                 let _ = tx.send("l".into());
                             }
+                            KeyCode::Char('a') => {
+                                let _ = tx.send("a".into());
+                            }
                             KeyCode::Char('u') => {
                                 let _ = tx.send("u".into());
                             }
@@ -1166,7 +1253,7 @@ pub fn spawn_input_handler(tx: Sender<String>) {
                             KeyCode::Char('-') => {
                                 let _ = tx.send("-".into());
                             }
-                            KeyCode::Char('[') | KeyCode::Char('=') => {
+                            KeyCode::Char('[') => {
                                 let _ = tx.send("[".into());
                             }
                             KeyCode::Char(']') => {

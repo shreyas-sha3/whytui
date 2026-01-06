@@ -1,3 +1,4 @@
+use crate::Track;
 use crate::api::split_title_artist;
 use crate::ui_common::blindly_trim;
 use reqwest::Client;
@@ -36,34 +37,50 @@ fn if_title_contains_non_english_and_other_language_script_return_only_english_p
         .join(" ")
 }
 
+fn duration_to_seconds(d: &str) -> String {
+    let parts: Vec<&str> = d.split(':').collect();
+    if parts.len() == 2 {
+        let mins: u32 = parts[0].parse().unwrap_or(0);
+        let secs: u32 = parts[1].parse().unwrap_or(0);
+        return (mins * 60 + secs).to_string();
+    }
+    d.to_string()
+}
+
 pub async fn fetch_synced_lyrics(
-    title_artist: &str,
+    track: &Track,
 ) -> Result<Vec<LrcLine>, Box<dyn std::error::Error + Send + Sync>> {
-    let (title, artist) = split_title_artist(title_artist);
     let client = Client::new();
     let mut search_urls = Vec::new();
-    let clean_title = blindly_trim(&title);
 
-    for individual_artist in artist.split(',').take(2) {
-        let trimmed_artist = individual_artist.trim();
+    let first_name_of_first_two_artists = track
+        .artists
+        .iter()
+        .take(2)
+        .map(|a| a.split_whitespace().next().unwrap_or(a))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    search_urls.push(format!(
+        "https://lrclib.net/api/search?track_name={}&artist_name={}",
+        urlencoding::encode(blindly_trim(&track.title)),
+        urlencoding::encode(&first_name_of_first_two_artists),
+    ));
+
+    for trimmed_artist in track.artists.iter().take(2) {
         if !trimmed_artist.is_empty() {
-            let first_word = trimmed_artist
+            let first_name_of_artist = trimmed_artist
                 .split_whitespace()
                 .next()
                 .unwrap_or(trimmed_artist);
 
-            // Path 1: /get (Direct Object)
+            // /get
             search_urls.push(format!(
-                "https://lrclib.net/api/get?track_name={}&artist_name={}",
-                urlencoding::encode(&if_title_contains_non_english_and_other_language_script_return_only_english_part(&title)),
-                urlencoding::encode(first_word),
-            ));
-
-            // Path 2: /search (Array)
-            search_urls.push(format!(
-                "https://lrclib.net/api/search?track_name={}&artist_name={}",
-                urlencoding::encode(&clean_title),
-                urlencoding::encode(first_word),
+                "https://lrclib.net/api/get?track_name={}&artist_name={}&album={}duration={}",
+                urlencoding::encode(&if_title_contains_non_english_and_other_language_script_return_only_english_part(&track.title)),
+                urlencoding::encode(first_name_of_artist),
+                urlencoding::encode(&track.album),
+                duration_to_seconds(&track.duration)
             ));
         }
     }

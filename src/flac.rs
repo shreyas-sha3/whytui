@@ -49,25 +49,26 @@ pub async fn init_api() -> Result<(), Box<dyn Error + Send + Sync>> {
 }
 
 pub async fn fetch_flac_stream_url(
-    song_name: &str,
+    query: &str,
+    target_duration: &str,
 ) -> Result<String, Box<dyn Error + Send + Sync>> {
-    let api_base = ACTIVE_API
-        .get()
-        .ok_or("API not initialized! Call init_api() first.")?;
-
+    let api_base = ACTIVE_API.get().ok_or("API not initialized")?;
     let client = Client::builder().user_agent(UA).build()?;
+    let target_secs = parse_to_seconds(target_duration);
 
-    let search_url = format!("{}/search/?s={}", api_base, song_name);
-    let resp: Value = client.get(&search_url).send().await?.json().await?;
+    let search_url = format!("{}/search/?s={}", api_base, urlencoding::encode(query));
+    let search_resp: Value = client.get(&search_url).send().await?.json().await?;
+    let first_item = search_resp["data"]["items"]
+        .get(0)
+        .ok_or("No search results found")?;
 
-    let track_id = resp
-        .get("data")
-        .and_then(|d| d.get("items"))
-        .or_else(|| resp.get("items"))
-        .or_else(|| resp.get("tracks").and_then(|t| t.get("items")))
-        .and_then(|items| items.get(0))
-        .and_then(|first| first["id"].as_i64())
-        .ok_or("Track not found")?;
+    let api_secs = first_item["duration"].as_i64().unwrap_or(0);
+
+    if (api_secs - target_secs).abs() > 4 {
+        return Err("First result doesn't match duration tolerance".into());
+    }
+
+    let track_id = first_item["id"].as_i64().ok_or("First result has no ID")?;
 
     let track_url = format!("{}/track/?id={}&quality=LOSSLESS", api_base, track_id);
     let track_data: Value = client.get(&track_url).send().await?.json().await?;
@@ -78,9 +79,9 @@ pub async fn fetch_flac_stream_url(
         &track_data
     };
 
-    if let Some(url) = data["OriginalTrackUrl"].as_str() {
-        if !url.is_empty() {
-            return Ok(url.to_string());
+    if let Some(stream_url) = data["OriginalTrackUrl"].as_str() {
+        if !stream_url.is_empty() {
+            return Ok(stream_url.to_string());
         }
     }
 
@@ -88,7 +89,17 @@ pub async fn fetch_flac_stream_url(
         return decode_manifest(manifest);
     }
 
-    Err("No FLAC stream found".into())
+    Err("No FLAC stream available for this track".into())
+}
+
+fn parse_to_seconds(duration_str: &str) -> i64 {
+    let parts: Vec<&str> = duration_str.split(':').collect();
+    if parts.len() == 2 {
+        let mins: i64 = parts[0].parse().unwrap_or(0);
+        let secs: i64 = parts[1].parse().unwrap_or(0);
+        return mins * 60 + secs;
+    }
+    duration_str.parse::<i64>().unwrap_or(0)
 }
 
 fn decode_manifest(encoded: &str) -> Result<String, Box<dyn Error + Send + Sync>> {

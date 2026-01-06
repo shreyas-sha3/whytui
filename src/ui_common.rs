@@ -1,6 +1,6 @@
 use crate::api::{PlaylistDetails, SongDetails, split_title_artist};
 use crate::features::{LrcLine, fetch_synced_lyrics};
-use crate::{LYRIC_OFFSET, UI_MODE, player};
+use crate::{LYRIC_OFFSET, Track, UI_MODE, player};
 use colored::*;
 use core::time;
 use crossterm::{
@@ -172,9 +172,10 @@ pub fn show_songs(list: &[SongDetails]) {
     print!("\r\n");
     for (i, s) in list.iter().enumerate() {
         print!(
-            "\r\x1b[2K{}. {} [{}]\r\n",
+            "\r\x1b[2K{}. {} [{}] [{}]\r\n",
             i + 1,
             s.title,
+            s.artists.join(", ").dimmed(),
             s.duration.cyan().italic()
         );
     }
@@ -215,38 +216,78 @@ pub fn show_playlists(list: &[PlaylistDetails]) {
     stdout().flush().unwrap();
 }
 
-pub fn start_monitor_thread<F>(name: String, draw_callback: F) -> Arc<AtomicBool>
+pub fn start_monitor_thread<F>(track: Track, draw_callback: F) -> Arc<AtomicBool>
 where
     F: Fn(&str, &str, &str, f64, f64, &[LrcLine], usize) + Send + 'static,
 {
     let stop = Arc::new(AtomicBool::new(false));
-    let stop_clone = stop.clone();
 
-    if name != "Nothing Playing" {
-        let song_name = name.clone();
-        tokio::spawn(async move {
-            let result = fetch_synced_lyrics(&song_name).await;
-
-            if *CURRENT_LYRIC_SONG.read().unwrap() != song_name {
-                LYRIC_OFFSET.store(0, Ordering::Relaxed);
-                LYRICS.write().unwrap().clear();
-                return;
-            }
-            let mut w = LYRICS.write().unwrap();
-            match result {
-                Ok(parsed) if !parsed.is_empty() => *w = parsed,
-                _ => {
-                    set_status_line(Some("No lyrics found >_<".to_string()));
-                }
-            }
-        });
+    // fetch lyrics once per song
+    if !track.url.is_empty() {
+        spawn_lyrics_fetcher(track.clone());
+        // show the quality of the song always
+        update_quality_status();
+    } else {
+        LYRICS.write().unwrap().clear();
     }
 
-    let is_lossless = crate::PLAYING_LOSSLESS.load(std::sync::atomic::Ordering::SeqCst);
-    let is_playing = crate::IS_PLAYING.load(std::sync::atomic::Ordering::SeqCst);
+    // 3. Start the UI Loop
+    let stop_clone = stop.clone();
+    let track_title = track.title.clone();
+    let artist_str = track.artists.join(", ");
+    let track_album = track.album.clone();
+
+    thread::spawn(move || {
+        while !stop_clone.load(Ordering::Relaxed) {
+            // status_bar updation
+            check_status_timeout();
+
+            // get current progress from playertitle
+            let (curr, tot) = player::get_time_info().unwrap_or((0.0, 0.0));
+            let lyrics = LYRICS.read().unwrap();
+
+            //get lyric line
+            let current_idx = get_current_lyric_index(&lyrics, curr);
+
+            //draw screen
+            draw_callback(
+                &track_title,
+                &artist_str,
+                &track_title,
+                curr,
+                tot,
+                &lyrics,
+                current_idx,
+            );
+
+            thread::sleep(Duration::from_millis(300));
+        }
+    });
+
+    stop
+}
+
+fn spawn_lyrics_fetcher(track: Track) {
+    tokio::spawn(async move {
+        let result = fetch_synced_lyrics(&track).await;
+
+        if *CURRENT_LYRIC_SONG.read().unwrap() != track.title {
+            return;
+        }
+
+        let mut w = LYRICS.write().unwrap();
+        match result {
+            Ok(parsed) if !parsed.is_empty() => *w = parsed,
+            _ => set_status_line(Some("No lyrics found >_<".to_string())),
+        }
+    });
+}
+
+fn update_quality_status() {
+    let is_lossless = crate::PLAYING_LOSSLESS.load(Ordering::SeqCst);
     let game_mode = crate::config().game_mode;
 
-    let quality_text = if is_playing && !game_mode {
+    let text = if !game_mode {
         if is_lossless {
             Some(
                 "     FLAC • LOSSLESS AUDIO     "
@@ -261,58 +302,30 @@ where
         None
     };
 
-    *BASE_STATUS.write().unwrap() = quality_text.clone();
-    _draw_status_line(quality_text);
+    *BASE_STATUS.write().unwrap() = text.clone();
+    _draw_status_line(text);
+}
 
-    thread::spawn(move || {
-        while !stop_clone.load(Ordering::Relaxed) {
-            let timeout_expired = STATUS_TIMEOUT
-                .read()
-                .unwrap()
-                .map(|t| Instant::now() > t)
-                .unwrap_or(false);
+fn check_status_timeout() {
+    let timeout = STATUS_TIMEOUT
+        .read()
+        .unwrap()
+        .map(|t| Instant::now() > t)
+        .unwrap_or(false);
+    if timeout {
+        *STATUS_TIMEOUT.write().unwrap() = None;
+        let base = BASE_STATUS.read().unwrap().clone();
+        _draw_status_line(base);
+    }
+}
 
-            if timeout_expired {
-                *STATUS_TIMEOUT.write().unwrap() = None;
-
-                let current_playing = crate::IS_PLAYING.load(Ordering::SeqCst);
-                if current_playing {
-                    let base = BASE_STATUS.read().unwrap().clone();
-                    _draw_status_line(base);
-                } else {
-                    _draw_status_line(None);
-                }
-            }
-
-            let (curr, tot) = player::get_time_info().unwrap_or((0.0, 0.0));
-            let (title, artist) = split_title_artist(&name);
-
-            let lyrics = LYRICS.read().unwrap();
-            let mut current_idx = 0;
-
-            for (i, l) in lyrics.iter().enumerate() {
-                let ts = dur_to_secs(l.timestamp);
-                let offset_secs = LYRIC_OFFSET.load(Ordering::Relaxed) as f64 / 1000.0;
-                if curr + 0.149 + offset_secs >= ts {
-                    current_idx = i;
-                } else {
-                    break;
-                }
-            }
-
-            draw_callback(&title, &artist, &name, curr, tot, &lyrics, current_idx);
-
-            thread::sleep(Duration::from_millis(300));
-
-            if is_playing {
-                continue;
-            } else {
-                // set_status_line(None);
-            }
-        }
-    });
-
-    stop
+fn get_current_lyric_index(lyrics: &[LrcLine], curr_time: f64) -> usize {
+    let offset = LYRIC_OFFSET.load(Ordering::Relaxed) as f64 / 1000.0;
+    lyrics
+        .iter()
+        .position(|l| dur_to_secs(l.timestamp) > curr_time + 0.149 + offset)
+        .unwrap_or(lyrics.len())
+        .saturating_sub(1)
 }
 
 pub fn get_visual_width(s: &str) -> usize {
