@@ -296,7 +296,7 @@ fn update_quality_status() {
                     .to_string(),
             )
         } else {
-            Some("     WEBM • STANDARD AUDIO     ".dimmed().to_string())
+            Some("     OPUS • STANDARD AUDIO     ".dimmed().to_string())
         }
     } else {
         None

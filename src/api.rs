@@ -205,11 +205,16 @@ impl YTMusic {
         let formats = data
             .pointer("/streamingData/adaptiveFormats")
             .and_then(|v| v.as_array())
-            .ok_or("No formats found. The disguise might have failed or video is premium-only.")?;
+            .ok_or("No formats found")?;
 
         let best = formats
             .iter()
-            .filter(|f| f["mimeType"].as_str().unwrap_or("").starts_with("audio/"))
+            .filter(|f| {
+                f["mimeType"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("audio/webm")
+            })
             .max_by_key(|f| f["bitrate"].as_i64().unwrap_or(0))
             .ok_or("No suitable audio stream found")?;
 
@@ -695,18 +700,31 @@ fn parse_duration(s: &str) -> String {
     }
 }
 
+use regex::Regex;
+
 fn parse_thumbnail(r: &Value) -> Option<String> {
     let mut thumbs = r.pointer("/thumbnail/thumbnails");
 
     if thumbs.is_none() {
         thumbs = r.pointer("/thumbnail/musicThumbnailRenderer/thumbnail/thumbnails");
     }
+
     thumbs
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.last())
         .and_then(|obj| obj.pointer("/url"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map(|s| {
+            let url = s.to_string();
+            let target_res = "=w600-h600-l90-rj";
+
+            if let Some(pos) = url.find('=') {
+                format!("{}{}", &url[..pos], target_res)
+            } else {
+                let re = Regex::new(r"/(s[0-9]+(-[ckhpo]+)*)/").unwrap();
+                re.replace(&url, "/s1200/").to_string()
+            }
+        })
 }
 
 pub fn split_title_artist(input: &str) -> (String, String) {

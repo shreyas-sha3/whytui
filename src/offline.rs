@@ -47,28 +47,46 @@ fn get_all_songs(dir: &Path) -> Vec<PathBuf> {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| p.extension().map_or(false, |e| e == "webm" || e == "flac"))
+            .filter(|p| p.extension().map_or(false, |e| e == "opus" || e == "flac"))
             .collect(),
         Err(_) => Vec::new(),
     }
 }
 
+use lofty::prelude::*;
+
 fn path_to_track(path: PathBuf) -> Track {
-    let title = path
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
     let url = path.to_string_lossy().to_string();
-    Track::new(
-        title,
-        vec!["Local File".to_string()],
-        "Offline Library".to_string(),
-        "idk".to_string(),
-        None,
-        None,
-        url,
-    )
+
+    let mut title = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut artists = vec!["Unknown".to_string()];
+    let mut album = "Offline Library".to_string();
+    let mut duration = "0:00".to_string();
+
+    if let Ok(tagged_file) = lofty::read_from_path(&path) {
+        if let Some(tag) = tagged_file.primary_tag() {
+            if let Some(t) = tag.title() {
+                title = t.to_string();
+            }
+
+            if let Some(a) = tag.artist() {
+                artists = a.split(", ").map(|s| s.to_string()).collect();
+            }
+
+            if let Some(al) = tag.album() {
+                album = al.to_string();
+            }
+
+            let props = tagged_file.properties();
+            let total_seconds = props.duration().as_secs();
+            duration = format!("{}:{:02}", total_seconds / 60, total_seconds % 60);
+        }
+    }
+
+    Track::new(title, artists, album, duration, None, None, url)
 }
 
 pub fn get_excluded_titles() -> Vec<String> {

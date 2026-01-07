@@ -9,12 +9,14 @@ static ACTIVE_API: OnceCell<String> = OnceCell::const_new();
 
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const API_CANDIDATES: &[&str] = &[
-    "https://maus.qqdl.site",
+    "https://triton.squid.wtf",
+    "https://tidal.kinoplus.online",
+    "https://tidal-api.binimum.org",
     "https://wolf.qqdl.site",
+    "https://maus.qqdl.site",
     "https://vogel.qqdl.site",
     "https://katze.qqdl.site",
     "https://hund.qqdl.site",
-    "https://tidal.401658.xyz",
 ];
 
 pub async fn init_api() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -64,7 +66,7 @@ pub async fn fetch_flac_stream_url(
 
     let api_secs = first_item["duration"].as_i64().unwrap_or(0);
 
-    if (api_secs - target_secs).abs() > 4 {
+    if (api_secs - target_secs).abs() > 3 {
         return Err("First result doesn't match duration tolerance".into());
     }
 

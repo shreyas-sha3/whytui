@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-reqwest = { version = "0.12.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
+reqwest = { version = "0.12.12", default-features = false, features = ["json", "rustls-tls", "cookies","blocking"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json = "1.0"
 
@@ -19,3 +19,5 @@ sha1 = "0.10"
 hex = "0.4"
 unicode-width = "0.1"
 base64 = "0.22.1"
+lofty = "0.22.4"
+regex = "1"

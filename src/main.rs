@@ -128,7 +128,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         lossless_mode: args.contains(&"--lossless".to_string()),
         game_mode: args.contains(&"--game".to_string()),
     };
-
     // Set the global OnceLock
     CONFIG.set(app_config).expect("Failed to set config");
 
@@ -220,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if let Some(track) = queue_next() {
             current_track = Some(track.clone()); //to pass it around to functions like next song
-            currently_playing = Some(player::play_file(&track.url, &track.title, &music_dir)?); //object to stop the current song
+            currently_playing = Some(player::play_file(&track.url, &track, &music_dir)?); //object to stop the current song
             refresh_ui(Some(&track));
         } else {
             set_status_line(Some(format!("No local songs found!")));
@@ -274,19 +273,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // -------------------------------------------------------------------
                 ui_common::clear_lyrics(); // stop display of lyrics
                 if let Some(track) = &current_track {
-                    let safe_title = track.title.replace(['/', '\\'], "-");
-                    let base_temp = music_dir.join("temp").join(&safe_title);
-                    let base_full = music_dir.join(&safe_title);
+                    let track_clone = track.clone();
+                    let music_dir_clone = music_dir.clone();
 
-                    for ext in ["webm", "flac"] {
-                        let temp = base_temp.with_extension(ext);
-                        let full = base_full.with_extension(ext);
+                    std::thread::spawn(move || {
+                        let file_name =
+                            player::the_naming_format_in_which_i_have_saved_the_track_locally(
+                                &track_clone.title,
+                                &track_clone.artists,
+                            );
 
-                        if temp.exists() {
-                            std::fs::rename(&temp, &full).ok();
-                            break;
+                        let base_temp = music_dir_clone.join("temp").join(&file_name);
+                        let base_full = music_dir_clone.join(&file_name);
+
+                        for ext in ["opus", "flac"] {
+                            let temp = base_temp.with_extension(ext);
+                            let full = base_full.with_extension(ext);
+
+                            if temp.exists() {
+                                let _ = player::apply_metadata(&temp, &track_clone);
+
+                                std::fs::rename(&temp, &full).ok();
+                                break;
+                            }
                         }
-                    }
+                    });
                     add_to_history(track.clone());
                 }
 
@@ -298,8 +309,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(track) = queue_next() {
                     //Check queue first - If yes play next in queue
                     current_track = Some(track.clone());
-                    currently_playing =
-                        Some(player::play_file(&track.url, &track.title, &music_dir)?);
+                    currently_playing = Some(player::play_file(&track.url, &track, &music_dir)?);
 
                     // -------------------------------------------------------------------
                     // CASE 2.1 : IF AUTOPLAY IS ENABLED (DEFAULT MODE)
@@ -583,12 +593,9 @@ async fn handle_global_commands(
                     let yt = yt_client.clone();
                     let video_id = vid.clone();
 
-                    // Fetch playlists (Awaited properly)
                     if let Ok(playlists) = yt_client.fetch_library_playlists().await {
                         show_playlists(&playlists);
 
-                        // If rx is a standard mpsc receiver, this blocks the UI thread!
-                        // If it is tokio mpsc, it needs .await
                         if let Ok(sel_str) = rx.recv() {
                             let sel = sel_str.trim().parse::<usize>().unwrap_or(0);
                             if sel >= 1 && sel <= playlists.len() {
@@ -631,13 +638,13 @@ async fn handle_global_commands(
             refresh_ui(None);
             return true;
         }
-        "w" | "wrong" => {
-            ui_common::stop_lyrics();
-            ui_common::clear_lyrics();
-            set_status_line(Some(format!("sorry... stopped lyrics")));
-            refresh_ui(None);
-            return true;
-        }
+        // "w" | "wrong" => {
+        //     ui_common::stop_lyrics();
+        //     ui_common::clear_lyrics();
+        //     set_status_line(Some(format!("sorry... stopped lyrics")));
+        //     refresh_ui(None);
+        //     return true;
+        // }
         //toggle between the ui modes
         "v" | "view" => {
             ui_common::stop_lyrics();
@@ -675,7 +682,7 @@ async fn handle_global_commands(
             if let Some(track) = queue_next() {
                 *current_track = Some(track.clone());
                 *currently_playing =
-                    Some(player::play_file(&track.url, &track.title, music_dir).unwrap());
+                    Some(player::play_file(&track.url, &track, music_dir).unwrap());
 
                 if !config().no_autoplay {
                     if config().offline_mode {
@@ -708,9 +715,8 @@ async fn handle_global_commands(
                     queue_add_front(track.clone());
 
                     *current_track = Some(prev_track.clone());
-                    *currently_playing = Some(
-                        player::play_file(&prev_track.url, &prev_track.title, music_dir).unwrap(),
-                    );
+                    *currently_playing =
+                        Some(player::play_file(&prev_track.url, &prev_track, music_dir).unwrap());
                     refresh_ui(Some(&prev_track));
                     set_status_line(Some(format!("PLAYING PREVIOUS")));
                 }
@@ -749,7 +755,7 @@ async fn handle_global_commands(
 
             print!(
                 "\n\n\n\r  {}",
-                "--- GUESS THE FORMAT --- \n\r  1) WEBM (Lossy)\n\r  2) FLAC (Lossless)"
+                "--- GUESS THE FORMAT --- \n\r  1) OPUS (Lossy)\n\r  2) FLAC (Lossless)"
             );
 
             if let Ok(guess_input) = rx.recv() {
@@ -771,7 +777,7 @@ async fn handle_global_commands(
                 if correct {
                     set_status_line(Some("CORRECT GUESS!".into()));
                 } else {
-                    let actual = if is_lossless { "FLAC" } else { "WEBM" };
+                    let actual = if is_lossless { "FLAC" } else { "OPUS" };
                     set_status_line(Some(format!("WRONG! It was {}", actual)));
                 }
             }
@@ -821,15 +827,18 @@ pub async fn handle_song_selection(
 
     if idx >= 1 && idx <= songs_list.len() {
         let selected = &songs_list[idx - 1];
-        let safe_title = selected.title.replace(['/', '\\'], "-");
+        let safe_title = player::the_naming_format_in_which_i_have_saved_the_track_locally(
+            &selected.title,
+            &selected.artists,
+        );
 
-        let webm = music_dir.join(format!("{}.webm", safe_title));
-        let flac = music_dir.join(format!("{}.flac", safe_title));
+        let opus = music_dir.join(format!("{}.opus", safe_title));
+        let flac = music_dir.join(format!("{}.flac", selected.artists.join(", ")));
 
         let src = if flac.exists() {
             flac.to_string_lossy().to_string()
-        } else if webm.exists() {
-            webm.to_string_lossy().to_string()
+        } else if opus.exists() {
+            opus.to_string_lossy().to_string()
         } else {
             let clean_title =
                 if_title_contains_non_english_and_other_language_script_return_only_english_part(
@@ -881,11 +890,7 @@ pub async fn handle_song_selection(
             }
             ui_common::clear_lyrics();
             *current_track = Some(new_track.clone());
-            *currently_playing = Some(player::play_file(
-                &new_track.url,
-                &new_track.title,
-                &music_dir,
-            )?);
+            *currently_playing = Some(player::play_file(&new_track.url, &new_track, &music_dir)?);
 
             if !config().no_autoplay {
                 let yt = yt_client.clone();
@@ -1142,6 +1147,7 @@ pub async fn queue_auto_add_online(yt: api::YTMusic, id: String) {
         }
 
         refresh_ui(None);
+        set_status_line(Some("Fetched Similar Songs!".to_string()));
     }
 }
 
@@ -1233,9 +1239,6 @@ pub fn spawn_input_handler(tx: Sender<String>) {
                             }
                             KeyCode::Char('t') => {
                                 let _ = tx.send("t".into());
-                            }
-                            KeyCode::Char('w') => {
-                                let _ = tx.send("w".into());
                             }
                             KeyCode::Char('r') => {
                                 let _ = tx.send("r".into());

@@ -24,9 +24,10 @@ pub fn prepare_music_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(d)
 }
 
+use crate::Track;
 pub fn play_file(
     source: &str,
-    title: &str,
+    track: &Track,
     music_dir: &PathBuf,
 ) -> Result<Child, Box<dyn std::error::Error>> {
     let ipc = get_ipc_path();
@@ -45,18 +46,22 @@ pub fn play_file(
         .arg(format!("--volume={}", current_vol));
 
     let ext = if source.contains(".tidal") || source.ends_with(".flac") {
+        cmd.arg("--demuxer-lavf-o=protocol_whitelist=[file,http,https,tcp,tls,crypto,data]");
         crate::PLAYING_LOSSLESS.store(true, Ordering::SeqCst);
         "flac"
     } else {
         crate::PLAYING_LOSSLESS.store(false, Ordering::SeqCst);
-        "webm"
+        "opus"
     };
     if source.starts_with("http") {
-        let safe_title = title.replace(['/', '\\'], "-");
+        let file_name =
+            the_naming_format_in_which_i_have_saved_the_track_locally(&track.title, &track.artists);
 
-        let temp_path = music_dir
-            .join("temp")
-            .join(format!("{}.{}", safe_title, ext));
+        let temp_path = music_dir.join("temp").join(file_name).with_extension(ext);
+
+        if let Some(parent) = temp_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
 
         cmd.arg(format!("--stream-record={}", temp_path.to_string_lossy()));
     }
@@ -127,7 +132,6 @@ pub fn send_ipc(cmd: serde_json::Value) -> Option<String> {
         }
     }
 
-    // --- WINDOWS IMPLEMENTATION (New) ---
     #[cfg(windows)]
     {
         use std::fs::OpenOptions;
@@ -165,4 +169,63 @@ pub fn seek(s: i64) {
 
 pub fn vol_change(s: i64) {
     send_ipc(json!({ "command": ["add", "volume", s] }));
+}
+
+pub fn the_naming_format_in_which_i_have_saved_the_track_locally(
+    title: &str,
+    artists: &[String],
+) -> String {
+    let safe_title = title.replace(['/', '\\'], "-");
+
+    let primary_artist = artists
+        .get(0)
+        .map(|s| s.replace(['/', '\\'], "-"))
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    format!("{} - {}", safe_title, primary_artist)
+}
+
+use lofty::picture::{MimeType, Picture, PictureType};
+use lofty::prelude::*;
+use lofty::tag::Tag;
+pub fn apply_metadata(path: &PathBuf, track: &Track) -> Result<(), Box<dyn std::error::Error>> {
+    let mut tagged_file = lofty::read_from_path(path)?;
+
+    let tag = if let Some(t) = tagged_file.primary_tag_mut() {
+        t
+    } else {
+        let tag_type = tagged_file.primary_tag_type();
+        tagged_file.insert_tag(Tag::new(tag_type));
+        tagged_file
+            .primary_tag_mut()
+            .ok_or("Could not create tags")?
+    };
+
+    tag.set_title(track.title.clone());
+    tag.set_artist(track.artists.join(", "));
+
+    if !track.album.is_empty() {
+        tag.set_album(track.album.clone());
+    }
+
+    if let Some(url) = &track.thumbnail_url {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+
+        if let Ok(resp) = client.get(url).send() {
+            if let Ok(data) = resp.bytes() {
+                tag.push_picture(Picture::new_unchecked(
+                    PictureType::CoverFront,
+                    Some(MimeType::Jpeg),
+                    None,
+                    data.to_vec(),
+                ));
+            }
+        }
+    }
+
+    tag.save_to_path(path, lofty::config::WriteOptions::default())?;
+
+    Ok(())
 }
