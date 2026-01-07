@@ -46,7 +46,6 @@ pub fn play_file(
         .arg(format!("--volume={}", current_vol));
 
     let ext = if source.contains(".tidal") || source.ends_with(".flac") {
-        cmd.arg("--demuxer-lavf-o=protocol_whitelist=[file,http,https,tcp,tls,crypto,data]");
         crate::PLAYING_LOSSLESS.store(true, Ordering::SeqCst);
         "flac"
     } else {

@@ -700,14 +700,10 @@ fn parse_duration(s: &str) -> String {
     }
 }
 
-use regex::Regex;
-
 fn parse_thumbnail(r: &Value) -> Option<String> {
-    let mut thumbs = r.pointer("/thumbnail/thumbnails");
-
-    if thumbs.is_none() {
-        thumbs = r.pointer("/thumbnail/musicThumbnailRenderer/thumbnail/thumbnails");
-    }
+    let thumbs = r
+        .pointer("/thumbnail/thumbnails")
+        .or_else(|| r.pointer("/thumbnail/musicThumbnailRenderer/thumbnail/thumbnails"));
 
     thumbs
         .and_then(|v| v.as_array())
@@ -716,17 +712,31 @@ fn parse_thumbnail(r: &Value) -> Option<String> {
         .and_then(|v| v.as_str())
         .map(|s| {
             let url = s.to_string();
-            let target_res = "=w600-h600-l90-rj";
+            let target_res = "=w800-h800-l90-rj-c";
 
             if let Some(pos) = url.find('=') {
-                format!("{}{}", &url[..pos], target_res)
-            } else {
-                let re = Regex::new(r"/(s[0-9]+(-[ckhpo]+)*)/").unwrap();
-                re.replace(&url, "/s1200/").to_string()
+                return format!("{}{}", &url[..pos], target_res);
             }
+
+            if url.contains("/s") {
+                return url
+                    .split('/')
+                    .map(|part| {
+                        if part.starts_with('s')
+                            && part.chars().nth(1).map_or(false, |c| c.is_ascii_digit())
+                        {
+                            "s800"
+                        } else {
+                            part
+                        }
+                    })
+                    .collect::<Vec<&str>>()
+                    .join("/");
+            }
+
+            format!("{}{}", url, target_res)
         })
 }
-
 pub fn split_title_artist(input: &str) -> (String, String) {
     if let (Some(start), Some(end)) = (input.rfind('['), input.rfind(']')) {
         if end > start {
