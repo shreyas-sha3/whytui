@@ -238,6 +238,6 @@ fn draw_ui2_status(
         }
     }
 
-    queue!(stdout, cursor::RestorePosition, cursor::Show).unwrap();
+    queue!(stdout, cursor::RestorePosition, cursor::Hide).unwrap();
     stdout.flush().unwrap();
 }

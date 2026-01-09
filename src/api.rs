@@ -27,6 +27,7 @@ pub struct PlaylistDetails {
     pub title: String,
     pub playlist_id: String,
     pub count: String,
+    pub continuation_token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -323,25 +324,71 @@ impl YTMusic {
         self.parse_library_playlists(res)
     }
 
+    pub async fn fetch_continuation(
+        &self,
+        token: &str,
+    ) -> Result<(Vec<SongDetails>, Option<String>), Box<dyn Error>> {
+        let body = json!({
+            "context": { "client": { "clientName": "WEB_REMIX", "clientVersion": "1.20251215.03.00", "hl": "en", "gl": "IN" } },
+            "continuation": token
+        });
+        let res = self
+            .post_auth("https://music.youtube.com/youtubei/v1/browse", &body)
+            .await?;
+        self.parse_playlist_songs(res)
+    }
+
     pub async fn fetch_playlist_songs(
         &self,
         playlist_id: &str,
         limit: usize,
-    ) -> Result<Vec<SongDetails>, Box<dyn Error>> {
-        let browse_id = if playlist_id == "VLLM" {
-            "VLLM".to_string()
-        } else if playlist_id.starts_with("VL") {
-            playlist_id.to_string()
-        } else {
-            format!("VL{}", playlist_id)
-        };
-        let url = "https://music.youtube.com/youtubei/v1/browse";
-        let body = json!({
-            "context": { "client": { "clientName": "WEB_REMIX", "clientVersion": "1.20251215.03.00", "hl": "en", "gl": "IN" } },
-            "browseId": browse_id
-        });
-        let res = self.post_auth(url, &body).await?;
-        self.parse_playlist_songs(res, limit)
+    ) -> Result<(Vec<SongDetails>, Option<String>), Box<dyn Error>> {
+        let mut songs = Vec::new();
+        let mut next_token = None;
+        let mut is_first = true;
+
+        while songs.len() < limit {
+            let body = if is_first {
+                let bid = if playlist_id.starts_with("VL") {
+                    playlist_id.to_string()
+                } else {
+                    format!("VL{}", playlist_id)
+                };
+                json!({
+                    "context": { "client": { "clientName": "WEB_REMIX", "clientVersion": "1.20251215.03.00", "hl": "en", "gl": "IN" } },
+                    "browseId": bid
+                })
+            } else {
+                let t = next_token.take().ok_or("Token missing")?;
+                json!({
+                    "context": { "client": { "clientName": "WEB_REMIX", "clientVersion": "1.20251215.03.00", "hl": "en", "gl": "IN" } },
+                    "continuation": t
+                })
+            };
+
+            let res = self
+                .post_auth("https://music.youtube.com/youtubei/v1/browse", &body)
+                .await?;
+            let (batch, new_token) = self.parse_playlist_songs(res)?;
+
+            if batch.is_empty() && new_token.is_none() {
+                break;
+            }
+            let needed = limit - songs.len();
+            if batch.len() > needed {
+                songs.extend(batch.into_iter().take(needed));
+            } else {
+                songs.extend(batch);
+            }
+
+            next_token = new_token;
+            is_first = false;
+
+            if next_token.is_none() {
+                break;
+            }
+        }
+        Ok((songs, next_token))
     }
 
     pub async fn fetch_related_songs(
@@ -349,6 +396,7 @@ impl YTMusic {
         video_id: &str,
         playlist_id: Option<&str>,
         limit: usize,
+        shuffle: bool,
     ) -> Result<Vec<SongDetails>, Box<dyn Error>> {
         let url = "https://music.youtube.com/youtubei/v1/next";
 
@@ -357,10 +405,21 @@ impl YTMusic {
             None => format!("RDAMVM{}", video_id),
         };
 
+        let params = if shuffle { "wAEB8gECKAE%3D" } else { "wAEB" };
+
         let payload = json!({
-            "context": { "client": { "clientName": "WEB_REMIX", "clientVersion": "1.20251215.03.00", "hl": "en", "gl": "IN" } },
+            "context": {
+                "client": {
+                    "clientName": "WEB_REMIX",
+                    "clientVersion": "1.20251215.03.00",
+                    "hl": "en",
+                    "gl": "IN"
+                }
+            },
             "videoId": video_id,
-            "playlistId": resolved_playlist_id
+            "playlistId": resolved_playlist_id,
+            "params": params,
+            "isAudioOnly": true
         });
 
         let res = self.post_auth(url, &payload).await?;
@@ -415,7 +474,7 @@ impl YTMusic {
                         .map(|s| s.trim_start_matches("VL").to_string())
                         .unwrap_or_default();
 
-                    let count = data
+                    let mut count = data
                         .pointer("/subtitle/runs")
                         .and_then(|v| v.as_array())
                         .and_then(|runs| runs.last())
@@ -424,11 +483,15 @@ impl YTMusic {
                         .unwrap_or("")
                         .to_string();
 
+                    if count == "Auto playlist" {
+                        count = "∞".to_string();
+                    }
                     if !id.is_empty() {
                         playlists.push(PlaylistDetails {
                             title,
                             playlist_id: id,
                             count,
+                            continuation_token: None,
                         });
                     }
                 }
@@ -440,72 +503,75 @@ impl YTMusic {
     fn parse_playlist_songs(
         &self,
         res: Value,
-        limit: usize,
-    ) -> Result<Vec<SongDetails>, Box<dyn Error>> {
+    ) -> Result<(Vec<SongDetails>, Option<String>), Box<dyn Error>> {
         let mut songs = Vec::new();
-        if let Some(items) = res.pointer("/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer/contents/0/musicPlaylistShelfRenderer/contents").and_then(|v| v.as_array()) {
-                for item in items {
-                    if let Some(r) = item.pointer("/musicResponsiveListItemRenderer") {
-                        let title = r.pointer("/flexColumns/0/musicResponsiveListItemFlexColumnRenderer/text/runs/0/text").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
-                        let video_id = r.pointer("/flexColumns/0/musicResponsiveListItemFlexColumnRenderer/text/runs/0/navigationEndpoint/watchEndpoint/videoId").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let duration = r.pointer("/fixedColumns/0/musicResponsiveListItemFixedColumnRenderer/text/runs/0/text").and_then(|v| v.as_str()).unwrap_or("0:00").to_string();
+        let mut token = None;
 
-                        let mut artists = Vec::new();
-                        let mut album = "Unknown".to_string();
+        let items = res.pointer("/contents/twoColumnBrowseResultsRenderer/secondaryContents/sectionListRenderer/contents/0/musicPlaylistShelfRenderer/contents")
+                .or_else(|| res.pointer("/onResponseReceivedActions/0/appendContinuationItemsAction/continuationItems"))
+                .or_else(|| res.pointer("/contents/singleColumnBrowseResultsRenderer/tabs/0/tabRenderer/content/sectionListRenderer/contents/0/musicPlaylistShelfRenderer/contents"))
+                .and_then(|v| v.as_array());
 
-                        let mut raw_artist_text = String::new();
-                        let mut found_separator = false;
+        if let Some(items) = items {
+            for item in items {
+                if let Some(data) = item.pointer("/musicResponsiveListItemRenderer") {
+                    let title = data.pointer("/flexColumns/0/musicResponsiveListItemFlexColumnRenderer/text/runs/0/text").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                    let video_id = data
+                        .pointer("/playlistItemData/videoId")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
 
-                        if let Some(runs) = r.pointer("/flexColumns/1/musicResponsiveListItemFlexColumnRenderer/text/runs").and_then(|v| v.as_array()) {
-                            for run in runs {
-                                let text = run.pointer("/text").and_then(|v| v.as_str()).unwrap_or("");
+                    if video_id.is_empty() {
+                        continue;
+                    }
 
-                                let page_type = run.pointer("/navigationEndpoint/browseEndpoint/browseEndpointContextSupportedConfigs/browseEndpointContextMusicConfig/pageType")
-                                    .and_then(|v| v.as_str());
+                    let duration = data.pointer("/fixedColumns/0/musicResponsiveListItemFixedColumnRenderer/text/runs/0/text").and_then(|v| v.as_str()).unwrap_or("0:00").to_string();
+                    let mut artists = Vec::new();
+                    let mut album = "Unknown".to_string();
 
-                                match page_type {
+                    if let Some(runs) = data
+                        .pointer(
+                            "/flexColumns/1/musicResponsiveListItemFlexColumnRenderer/text/runs",
+                        )
+                        .and_then(|v| v.as_array())
+                    {
+                        for run in runs {
+                            let text = run.pointer("/text").and_then(|v| v.as_str()).unwrap_or("");
+                            if text == " • "
+                                || text.chars().all(char::is_numeric)
+                                || text.contains(':')
+                            {
+                                continue;
+                            }
+
+                            match run.pointer("/navigationEndpoint/browseEndpoint/browseEndpointContextSupportedConfigs/browseEndpointContextMusicConfig/pageType").and_then(|v| v.as_str()) {
                                     Some("MUSIC_PAGE_TYPE_ARTIST") => artists.push(text.to_string()),
                                     Some("MUSIC_PAGE_TYPE_ALBUM") => album = text.to_string(),
-                                    _ => {
-                                        if text == " • " {
-                                            found_separator = true;
-                                        }
-                                        else if !found_separator {
-                                            raw_artist_text.push_str(text);
-                                        }
-                                        else if album == "Unknown" && text != " • " && !text.chars().all(char::is_numeric) && !text.contains(':') {
-                                            album = text.to_string();
-                                        }
-                                    }
+                                    _ => if artists.is_empty() && text != "E" { artists.push(text.to_string()); }
                                 }
-                            }
-                        }
-
-                        if artists.is_empty() && !raw_artist_text.is_empty() {
-                            artists = raw_artist_text
-                                .split(&[',', '&'][..])
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                                .collect();
-                        }
-
-                        let thumbnail_url = parse_thumbnail(r);
-
-                        if !video_id.is_empty() {
-                            songs.push(SongDetails {
-                                title,
-                                video_id,
-                                artists,
-                                album,
-                                duration,
-                                thumbnail_url
-                            });
-                            if songs.len() >= limit { break; }
                         }
                     }
+
+                    songs.push(SongDetails {
+                        title,
+                        video_id,
+                        artists,
+                        album,
+                        duration,
+                        thumbnail_url: parse_thumbnail(data),
+                    });
+                } else if let Some(t) = item
+                    .pointer(
+                        "/continuationItemRenderer/continuationEndpoint/continuationCommand/token",
+                    )
+                    .and_then(|v| v.as_str())
+                {
+                    token = Some(t.to_string());
                 }
             }
-        Ok(songs)
+        }
+        Ok((songs, token))
     }
 
     fn parse_related_songs(

@@ -111,8 +111,7 @@ static UI_MODE: AtomicUsize = AtomicUsize::new(0);
 //LIST OF SONGS FROM A PLAYLIST
 static LIBRARY_SONG_LIST: RwLock<Vec<SongDetails>> = RwLock::new(Vec::new());
 //CONTAINS PLAYLIST ID SO AUTOPLAY CAN FETCH FROM THE SAME LIBRARY
-static PLAYING_FROM_LIBRARY: RwLock<Option<String>> = RwLock::new(None);
-
+static PLAYING_FROM_LIBRARY: RwLock<Option<(String, bool)>> = RwLock::new(None);
 pub static LYRIC_OFFSET: AtomicI64 = AtomicI64::new(0);
 
 #[tokio::main]
@@ -498,7 +497,7 @@ async fn handle_global_commands(
         if let Ok(s) = input[1..].trim().parse::<i64>() {
             player::seek(if input.starts_with('<') { -s } else { s });
         }
-        refresh_ui(None);
+        // refresh_ui(None);
         return true;
     }
 
@@ -816,7 +815,7 @@ pub async fn handle_song_selection(
     yt_client: &api::YTMusic,
     current_track: &mut Option<Track>,
     currently_playing: &mut Option<Child>,
-    playlist_context: Option<String>,
+    playlist_context: Option<(String, bool)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let input = selection_input.trim();
     let (idx, is_queue) = if input.to_lowercase().starts_with('q') {
@@ -833,7 +832,7 @@ pub async fn handle_song_selection(
         );
 
         let opus = music_dir.join(format!("{}.opus", safe_title));
-        let flac = music_dir.join(format!("{}.flac", selected.artists.join(", ")));
+        let flac = music_dir.join(format!("{}.flac", safe_title));
 
         let src = if flac.exists() {
             flac.to_string_lossy().to_string()
@@ -910,6 +909,7 @@ pub async fn handle_song_selection(
     Ok(())
 }
 
+use rand::seq::IndexedRandom;
 async fn handle_library_browsing(
     rx: &std::sync::mpsc::Receiver<String>,
     yt_client: &api::YTMusic,
@@ -918,77 +918,115 @@ async fn handle_library_browsing(
     currently_playing: &mut Option<Child>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     set_status_line(Some("Fetching Library...".to_string()));
+
     let playlists = yt_client.fetch_library_playlists().await?;
     show_playlists(&playlists);
 
-    if let Ok(sel_str) = rx.recv() {
-        let sel = sel_str.trim().parse::<usize>().unwrap_or(0);
-        if sel >= 1 && sel <= playlists.len() {
-            let selected_playlist = &playlists[sel - 1];
-            set_status_line(Some(format!("Loading '{}'...", selected_playlist.title)));
+    // waiting for playlist selection
+    let sel_str = match rx.recv() {
+        Ok(s) => s,
+        _ => return Ok(()),
+    };
+    let sel = sel_str.trim().parse::<usize>().unwrap_or(0);
 
-            {
-                set_status_line(Some("Fetching first songs".to_string()));
-                let fetched_songs = yt_client
-                    .fetch_playlist_songs(&selected_playlist.playlist_id, 100)
-                    .await?;
-                *LIBRARY_SONG_LIST.write().unwrap() = fetched_songs;
-            }
+    if sel < 1 || sel > playlists.len() {
+        return Ok(());
+    }
 
-            let mut page: usize = 1;
+    let selected_playlist = &playlists[sel - 1];
+    set_status_line(Some(format!("Loading '{}'...", selected_playlist.title)));
 
-            loop {
-                refresh_ui(None);
-                println!(" [n] Next | [p] Prev ");
+    let (initial_songs, mut continuation_token) = yt_client
+        .fetch_playlist_songs(&selected_playlist.playlist_id, 100)
+        .await?;
+    *LIBRARY_SONG_LIST.write().unwrap() = initial_songs;
 
-                {
-                    let songs = LIBRARY_SONG_LIST.read().unwrap();
-                    let start = (page - 1) * 5;
-                    if start < songs.len() {
-                        let limit = std::cmp::min(start + 5, songs.len());
-                        ui1::show_songs(&songs[start..limit].to_vec());
-                    } else {
-                        println!("--- End of Playlist ---");
+    let mut page: usize = 1;
+    const PAGE_SIZE: usize = 5;
 
-                        if page > 1 {
-                            page -= 1;
+    loop {
+        refresh_ui(None);
+
+        let list_len = LIBRARY_SONG_LIST.read().unwrap().len();
+        let start = (page - 1) * PAGE_SIZE;
+        let end = std::cmp::min(start + PAGE_SIZE, list_len);
+
+        println!(" [n]ext | [p]rev | [s]huffle");
+        if start < list_len {
+            let slice = LIBRARY_SONG_LIST.read().unwrap()[start..end].to_vec();
+            ui_common::show_songs(&slice);
+            set_status_line(Some(format!("Page {} | Fetched {}", page, list_len)));
+        } else {
+            println!(" --- End ---");
+        }
+
+        if let Ok(input) = rx.recv() {
+            match input.trim() {
+                "n" => {
+                    if page * PAGE_SIZE >= list_len {
+                        if let Some(token) = continuation_token.take() {
+                            set_status_line(Some("Fetching more...".into()));
+
+                            match yt_client.fetch_continuation(&token).await {
+                                Ok((new_songs, next_token)) => {
+                                    LIBRARY_SONG_LIST.write().unwrap().extend(new_songs);
+                                    continuation_token = next_token;
+                                    page += 1;
+
+                                    while rx.try_recv().is_ok() {} //to not increase page when spamming while loading
+                                }
+                                Err(e) => {
+                                    set_status_line(Some(format!("Error: {}", e)));
+                                    continuation_token = Some(token);
+                                }
+                            }
+                        } else {
+                            set_status_line(Some("No more songs.".into()));
                         }
+                    } else {
+                        page += 1;
                     }
                 }
+                "p" => {
+                    if page > 1 {
+                        page -= 1;
+                    }
+                }
+                // "s" => {
+                //     let list = LIBRARY_SONG_LIST.read().unwrap();
 
-                if let Ok(input) = rx.recv() {
-                    let what_to_do_now = input.as_str().trim();
-                    if what_to_do_now == "n" {
-                        page += 1;
-                    } else if what_to_do_now == "p" {
-                        if page > 1 {
-                            page -= 1;
-                        }
-                    } else if what_to_do_now.trim().is_empty() {
-                        break;
-                    } else if let Ok(num) = what_to_do_now.parse::<usize>() {
-                        let selected_song = {
-                            let songs = LIBRARY_SONG_LIST.read().unwrap();
-                            let actual_idx = (page - 1) * 5 + (num - 1);
-                            if actual_idx < songs.len() {
-                                Some(songs[actual_idx].clone())
-                            } else {
-                                None
-                            }
-                        };
+                //     if let Some(song) = list.choose(&mut rand::rng()) {
+                //         handle_song_selection(
+                //             "1".into(),
+                //             &[song.clone()],
+                //             music_dir,
+                //             yt_client,
+                //             current_track,
+                //             currently_playing,
+                //             Some((selected_playlist.playlist_id.clone(), true)),
+                //         )
+                //         .await?;
+                //         break;
+                //     }
+                // }
+                "" => break,
 
-                        if let Some(song) = selected_song {
+                num_str => {
+                    if let Ok(num) = num_str.parse::<usize>() {
+                        let song_idx = (page - 1) * PAGE_SIZE + (num - 1);
+                        let song = LIBRARY_SONG_LIST.read().unwrap().get(song_idx).cloned();
+
+                        if let Some(s) = song {
                             handle_song_selection(
-                                "1".to_string(),
-                                &[song],
+                                "1".into(),
+                                &[s],
                                 music_dir,
                                 yt_client,
                                 current_track,
                                 currently_playing,
-                                Some(selected_playlist.playlist_id.clone()),
+                                Some((selected_playlist.playlist_id.clone(), false)),
                             )
                             .await?;
-
                             break;
                         }
                     }
@@ -998,7 +1036,6 @@ async fn handle_library_browsing(
     }
     Ok(())
 }
-
 /// -------------------------------------------------------------------
 /// QUEUE & MPV IPC & PLAYBACK
 /// -------------------------------------------------------------------
@@ -1085,13 +1122,18 @@ pub async fn queue_auto_add_online(yt: api::YTMusic, id: String) {
         };
 
         if cache_empty {
-            let playlist_context = {
+            let (playlist_id, should_suffle) = {
                 let guard = PLAYING_FROM_LIBRARY.read().unwrap();
-                guard.clone()
+                match &*guard {
+                    Some((playlist_id, shuffle_state)) => {
+                        (Some(playlist_id.clone()), *shuffle_state)
+                    }
+                    None => (None, false),
+                }
             };
 
             if let Ok(related) = yt
-                .fetch_related_songs(&id, playlist_context.as_deref(), 50)
+                .fetch_related_songs(&id, playlist_id.as_deref(), 50, should_suffle)
                 .await
             {
                 let mut c = RELATED_SONG_LIST.write().unwrap();
