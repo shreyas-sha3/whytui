@@ -992,23 +992,23 @@ async fn handle_library_browsing(
                         page -= 1;
                     }
                 }
-                // "s" => {
-                //     let list = LIBRARY_SONG_LIST.read().unwrap();
+                "s" => {
+                    let list = LIBRARY_SONG_LIST.read().unwrap();
 
-                //     if let Some(song) = list.choose(&mut rand::rng()) {
-                //         handle_song_selection(
-                //             "1".into(),
-                //             &[song.clone()],
-                //             music_dir,
-                //             yt_client,
-                //             current_track,
-                //             currently_playing,
-                //             Some((selected_playlist.playlist_id.clone(), true)),
-                //         )
-                //         .await?;
-                //         break;
-                //     }
-                // }
+                    if let Some(song) = list.choose(&mut rand::rng()) {
+                        handle_song_selection(
+                            "1".into(),
+                            &[song.clone()],
+                            music_dir,
+                            yt_client,
+                            current_track,
+                            currently_playing,
+                            Some((selected_playlist.playlist_id.clone(), true)),
+                        )
+                        .await?;
+                        break;
+                    }
+                }
                 "" => break,
 
                 num_str => {
