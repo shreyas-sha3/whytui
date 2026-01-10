@@ -583,74 +583,85 @@ impl YTMusic {
         let mut related = Vec::new();
 
         if let Some(tabs) = res
-                .pointer("/contents/singleColumnMusicWatchNextResultsRenderer/tabbedRenderer/watchNextTabbedResultsRenderer/tabs")
-                .and_then(|v| v.as_array())
-            {
-                for tab in tabs {
-                    if let Some(contents) = tab
-                        .pointer("/tabRenderer/content/musicQueueRenderer/content/playlistPanelRenderer/contents")
-                        .and_then(|v| v.as_array())
-                    {
-                        let mut found_current = false;
+                    .pointer("/contents/singleColumnMusicWatchNextResultsRenderer/tabbedRenderer/watchNextTabbedResultsRenderer/tabs")
+                    .and_then(|v| v.as_array())
+                {
+                    for tab in tabs {
+                        if let Some(contents) = tab
+                            .pointer("/tabRenderer/content/musicQueueRenderer/content/playlistPanelRenderer/contents")
+                            .and_then(|v| v.as_array())
+                        {
+                            let mut found_current = false;
 
-                        for item in contents {
-                            let data = if let Some(renderer) = item.pointer("/playlistPanelVideoRenderer") {
-                                Some(renderer)
-                            } else if let Some(renderer) = item.pointer("/playlistPanelVideoWrapperRenderer/primaryRenderer/playlistPanelVideoRenderer") {
-                                Some(renderer)
-                            } else {
-                                None
-                            };
+                            for item in contents {
+                                let data = if let Some(renderer) = item.pointer("/playlistPanelVideoRenderer") {
+                                    Some(renderer)
+                                } else if let Some(renderer) = item.pointer("/playlistPanelVideoWrapperRenderer/primaryRenderer/playlistPanelVideoRenderer") {
+                                    Some(renderer)
+                                } else {
+                                    None
+                                };
 
-                            if let Some(r) = data {
-                                let item_id = r.pointer("/videoId").and_then(|v| v.as_str()).unwrap_or("");
-                                let is_selected = r.pointer("/selected").and_then(|v| v.as_bool()).unwrap_or(false);
+                                if let Some(r) = data {
+                                    let item_id = r.pointer("/videoId").and_then(|v| v.as_str()).unwrap_or("");
+                                    let is_selected = r.pointer("/selected").and_then(|v| v.as_bool()).unwrap_or(false);
 
-                                if is_selected || (item_id == video_id && !found_current) {
-                                    found_current = true;
-                                    continue;
-                                }
-
-                                if found_current {
-                                    let title = r.pointer("/title/runs/0/text").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
-                                    let duration = r.pointer("/lengthText/runs/0/text").and_then(|v| v.as_str()).map(parse_duration).unwrap_or("0:00".to_string());
-
-                                    let mut artist = "Unknown".to_string();
-                                    let mut album = "Unknown".to_string();
-
-                                    if let Some(runs) = r.pointer("/longBylineText/runs").and_then(|v| v.as_array()) {
-                                        if let Some(a) = runs.get(0).and_then(|v| v.pointer("/text")).and_then(|v| v.as_str()) {
-                                            artist = a.to_string();
-                                        }
-                                        if runs.len() >= 3 {
-                                            if let Some(alb) = runs.get(2).and_then(|v| v.pointer("/text")).and_then(|v| v.as_str()) {
-                                                album = alb.to_string();
-                                            }
-                                        }
-                                    } else {
-                                        artist = r.pointer("/shortBylineText/runs/0/text").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                                    if is_selected || (item_id == video_id && !found_current) {
+                                        found_current = true;
+                                        continue;
                                     }
 
-                                    let thumbnail_url = parse_thumbnail(r);
+                                    if found_current {
+                                        let title = r.pointer("/title/runs/0/text").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                                        let duration = r.pointer("/lengthText/runs/0/text").and_then(|v| v.as_str()).map(parse_duration).unwrap_or("0:00".to_string());
 
-                                    related.push(SongDetails {
-                                        title,
-                                        video_id: item_id.to_string(),
-                                        artists: vec![artist],
-                                        album,
-                                        duration,
-                                        thumbnail_url,
-                                    });
+                                        let mut artists = Vec::new();
+                                        let mut album = "Unknown".to_string();
 
-                                    if related.len() >= limit {
-                                        return Ok(related);
+                                        if let Some(runs) = r.pointer("/longBylineText/runs").and_then(|v| v.as_array()) {
+                                            let mut is_album_section = false;
+                                            for run in runs {
+                                                let text = run.pointer("/text").and_then(|v| v.as_str()).unwrap_or("");
+
+                                                if text == " • " {
+                                                    is_album_section = true;
+                                                    continue;
+                                                }
+                                                if text == ", " || text == " & " || text.trim().is_empty() {
+                                                    continue;
+                                                }
+
+                                                if is_album_section {
+                                                    album = text.to_string();
+                                                } else {
+                                                    artists.push(text.to_string());
+                                                }
+                                            }
+                                        } else {
+                                            let artist_text = r.pointer("/shortBylineText/runs/0/text").and_then(|v| v.as_str()).unwrap_or("Unknown");
+                                            artists.push(artist_text.to_string());
+                                        }
+
+                                        let thumbnail_url = parse_thumbnail(r);
+
+                                        related.push(SongDetails {
+                                            title,
+                                            video_id: item_id.to_string(),
+                                            artists,
+                                            album,
+                                            duration,
+                                            thumbnail_url,
+                                        });
+
+                                        if related.len() >= limit {
+                                            return Ok(related);
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
         Ok(related)
     }
 }
@@ -699,57 +710,6 @@ fn parse_music_item(item: &Value) -> Option<SongDetails> {
         });
     }
     None
-}
-
-fn parse_queue_item(item: &Value) -> Option<SongDetails> {
-    let r = item.pointer("/playlistPanelVideoRenderer")?;
-    let raw_title = r.pointer("/title/runs/0/text")?.as_str()?.to_string();
-    let video_id = r.pointer("/videoId")?.as_str()?.to_string();
-    let duration = r
-        .pointer("/lengthText/runs/0/text")
-        .and_then(|v| v.as_str())
-        .map(parse_duration)
-        .unwrap_or("0:00".to_string());
-
-    let mut artists = Vec::new();
-    let mut album = "Unknown".to_string();
-
-    if let Some(runs) = r.pointer("/longBylineText/runs").and_then(|v| v.as_array()) {
-        if let Some(a) = runs
-            .get(0)
-            .and_then(|v| v.pointer("/text"))
-            .and_then(|v| v.as_str())
-        {
-            artists.push(a.to_string());
-        }
-        if runs.len() >= 3 {
-            if let Some(alb) = runs
-                .get(2)
-                .and_then(|v| v.pointer("/text"))
-                .and_then(|v| v.as_str())
-            {
-                album = alb.to_string();
-            }
-        }
-    } else {
-        // fallback
-        let artist_text = r
-            .pointer("/shortBylineText/runs/0/text")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown");
-        artists.push(artist_text.to_string());
-    }
-
-    let thumbnail_url = parse_thumbnail(r);
-
-    Some(SongDetails {
-        title: raw_title,
-        video_id,
-        artists,
-        album,
-        duration,
-        thumbnail_url,
-    })
 }
 
 fn parse_duration(s: &str) -> String {

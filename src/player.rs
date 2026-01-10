@@ -55,8 +55,9 @@ pub fn play_file(
     if source.starts_with("http") {
         let file_name =
             the_naming_format_in_which_i_have_saved_the_track_locally(&track.title, &track.artists);
-
-        let temp_path = music_dir.join("temp").join(file_name).with_extension(ext);
+        let temp_path = music_dir
+            .join("temp")
+            .join(format!("{}.{}", file_name, ext));
 
         if let Some(parent) = temp_path.parent() {
             let _ = std::fs::create_dir_all(parent);

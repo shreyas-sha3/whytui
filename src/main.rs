@@ -100,7 +100,7 @@ static RELATED_SONG_LIST: RwLock<Vec<api::SongDetails>> = RwLock::new(Vec::new()
 static RECENTLY_PLAYED: RwLock<VecDeque<Track>> = RwLock::new(VecDeque::new());
 const HISTORY_LIMIT: usize = 50;
 //TO KEEP CONSISTENT VOLUME LEVEL ACROSS TRACKS (TO BE READ BY player.rs)
-pub static VOLUME: AtomicI64 = AtomicI64::new(70);
+pub static VOLUME: AtomicI64 = AtomicI64::new(75);
 
 pub static IS_PLAYING: AtomicBool = AtomicBool::new(false);
 pub static IS_LOSSLESS: AtomicBool = AtomicBool::new(false);
@@ -282,16 +282,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &track_clone.artists,
                             );
 
-                        let base_temp = music_dir_clone.join("temp").join(&file_name);
-                        let base_full = music_dir_clone.join(&file_name);
-
                         for ext in ["opus", "flac"] {
-                            let temp = base_temp.with_extension(ext);
-                            let full = base_full.with_extension(ext);
+                            let temp = music_dir_clone
+                                .join("temp")
+                                .join(format!("{}.{}", file_name, ext));
+                            let full = music_dir_clone.join(format!("{}.{}", file_name, ext));
 
                             if temp.exists() {
                                 let _ = player::apply_metadata(&temp, &track_clone);
-
                                 std::fs::rename(&temp, &full).ok();
                                 break;
                             }
@@ -671,7 +669,7 @@ async fn handle_global_commands(
         }
 
         "n" | "next" => {
-            ui_common::clear_lyrics();
+            ui_common::stop_lyrics();
 
             if let Some(track) = current_track {
                 add_to_history(track.clone());
