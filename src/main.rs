@@ -41,7 +41,9 @@ pub struct AppConfig {
     pub offline_mode: bool,
     pub no_autoplay: bool,
     pub lossless_mode: bool,
+    pub peak_lossless_mode: bool,
     pub game_mode: bool,
+    pub download_mode: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -120,12 +122,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // PART 1 - GET ARGUMENTS, INITIAL GLOBAL (STATIC) VARIABLES
     // ----------------------------------------------------------------------------------
     let args: Vec<String> = std::env::args().collect();
-
     let app_config = AppConfig {
-        offline_mode: args.contains(&"--offline".to_string()),
-        no_autoplay: args.contains(&"--manual".to_string()),
-        lossless_mode: args.contains(&"--lossless".to_string()),
-        game_mode: args.contains(&"--game".to_string()),
+        download_mode: args.iter().any(|a| a == "--download" || a == "-d"), //save songs to music_dir
+        offline_mode: args.iter().any(|a| a == "--offline" || a == "-o"), //play only from offline library
+        no_autoplay: args.iter().any(|a| a == "--nomix" || a == "-n"),    //dont auto queue
+        lossless_mode: args
+            .iter()
+            .any(|a| a == "--lossless" || a == "-l" || a == "--peak-lossless" || a == "-pl"), //try fetching from tidal
+        peak_lossless_mode: args.iter().any(|a| a == "--peak-lossless" || a == "-pl"), //try fetching peak from tidal
+        game_mode: args.iter().any(|a| a == "--guess" || a == "-g"), //guess quality (to be used with --lossless)
     };
     // Set the global OnceLock
     CONFIG.set(app_config).expect("Failed to set config");
@@ -267,35 +272,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // if finished fully move song from /temp folder to music_dir
             //
             if let Ok(Some(_)) = child.try_wait() {
-                // -------------------------------------------------------------------
-                // CASE 1 : A SONG IS CURRENTLY BEING PLAYED
-                // -------------------------------------------------------------------
-                ui_common::clear_lyrics(); // stop display of lyrics
+                ui_common::clear_lyrics();
+
                 if let Some(track) = &current_track {
-                    let track_clone = track.clone();
-                    let music_dir_clone = music_dir.clone();
-
-                    std::thread::spawn(move || {
-                        let file_name =
-                            player::the_naming_format_in_which_i_have_saved_the_track_locally(
-                                &track_clone.title,
-                                &track_clone.artists,
-                            );
-
-                        for ext in ["opus", "flac"] {
-                            let temp = music_dir_clone
-                                .join("temp")
-                                .join(format!("{}.{}", file_name, ext));
-                            let full = music_dir_clone.join(format!("{}.{}", file_name, ext));
-
-                            if temp.exists() {
-                                let _ = player::apply_metadata(&temp, &track_clone);
-                                std::fs::rename(&temp, &full).ok();
-                                break;
-                            }
-                        }
-                    });
                     add_to_history(track.clone());
+
+                    if config().download_mode && track.url.starts_with("http")
+                        || track.url.ends_with(".mpd")
+                    {
+                        let track_clone = track.clone();
+                        let music_dir_clone = music_dir.clone();
+                        let url_clone = track.url.clone();
+
+                        std::thread::spawn(move || {
+                            if let Err(e) = player::background_download(
+                                &url_clone,
+                                &track_clone,
+                                &music_dir_clone,
+                            ) {
+                                eprintln!("Download failed: {}", e);
+                            }
+                        });
+                    }
                 }
 
                 currently_playing = None;
@@ -669,14 +667,13 @@ async fn handle_global_commands(
         }
 
         "n" | "next" => {
-            ui_common::stop_lyrics();
-
             if let Some(track) = current_track {
                 add_to_history(track.clone());
                 player::stop_process(currently_playing, &track.title, music_dir);
             }
 
             if let Some(track) = queue_next() {
+                ui_common::clear_lyrics();
                 *current_track = Some(track.clone());
                 *currently_playing =
                     Some(player::play_file(&track.url, &track, music_dir).unwrap());
@@ -708,6 +705,8 @@ async fn handle_global_commands(
         "p" | "previous" => {
             if let Some(track) = current_track {
                 if let Some(prev_track) = get_prev_track() {
+                    ui_common::clear_lyrics();
+
                     player::stop_process(currently_playing, &track.title, music_dir);
                     queue_add_front(track.clone());
 

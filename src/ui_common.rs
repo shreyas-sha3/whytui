@@ -236,6 +236,7 @@ where
     let track_title = track.title.clone();
     let artist_str = track.artists.join(", ");
     let track_album = track.album.clone();
+    let tot: f64 = duration_to_seconds(&track.duration) as f64;
 
     thread::spawn(move || {
         while !stop_clone.load(Ordering::Relaxed) {
@@ -243,7 +244,7 @@ where
             check_status_timeout();
 
             // get current progress from playertitle
-            let (curr, tot) = player::get_time_info().unwrap_or((0.0, 0.0));
+            let (curr, player_tot) = player::get_time_info().unwrap_or((0.0, 0.0));
             let lyrics = LYRICS.read().unwrap();
 
             //get lyric line
@@ -416,4 +417,17 @@ pub fn word_wrap_cjk(text: &str, max_width: usize) -> Vec<String> {
         lines.push(current_line);
     }
     lines
+}
+
+fn duration_to_seconds(duration: &str) -> f64 {
+    let parts: Vec<f64> = duration
+        .split(':')
+        .map(|p| p.parse::<f64>().unwrap_or(0.0))
+        .collect();
+
+    match parts.as_slice() {
+        [m, s] => m * 60.0 + s,
+        [h, m, s] => h * 3600.0 + m * 60.0 + s,
+        _ => 0.0,
+    }
 }

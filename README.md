@@ -71,10 +71,11 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
 
 
 * Arguments:
-  * `--manual` to disable autoplay
-  * `--offline` to just play offline songs
-  * `--lossless` to attempt fetching lossless audio
-  * `--game` try guessing currently playing song quality
+  * `-d` | `--download` to just play offline songs
+  * `-o` | `--offline` to just play offline songs
+  * `-n` | `--nomix` to disable autoplay
+  * `-l` | `--lossless` to attempt fetching lossless audio
+  * `-g` | `--guess` try guessing currently playing song quality
 
 * Note: Netscape cookies can be added at `$MusicDir/whytui/config/cookies.txt`
 

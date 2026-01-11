@@ -28,4 +28,5 @@ hex = "0.4"
 unicode-width = "0.1" #distinguesh japanese chars to make text centered
 base64 = "0.22.1" #decode  flac url
 lofty = { version = "0.22.4", default-features = false } #adding metadata to .opus and .flac
-ratatui = "0.29"
+# ratatui = "0.29"
+lazy_static = "1.4"

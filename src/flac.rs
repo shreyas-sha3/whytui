@@ -1,7 +1,9 @@
+use crate::config;
 use base64::prelude::*;
 use reqwest::Client;
 use serde_json::Value;
 use std::error::Error;
+use std::io::Write;
 use std::time::Instant;
 use tokio::sync::OnceCell;
 
@@ -60,19 +62,40 @@ pub async fn fetch_flac_stream_url(
 
     let search_url = format!("{}/search/?s={}", api_base, urlencoding::encode(query));
     let search_resp: Value = client.get(&search_url).send().await?.json().await?;
-    let first_item = search_resp["data"]["items"]
-        .get(0)
-        .ok_or("No search results found")?;
 
-    let api_secs = first_item["duration"].as_i64().unwrap_or(0);
+    let items = search_resp["data"]["items"]
+        .as_array()
+        .ok_or("Invalid search response format")?;
 
-    if (api_secs - target_secs).abs() > 3 {
-        return Err("First result doesn't match duration tolerance".into());
+    if items.is_empty() {
+        return Err("No search results found".into());
     }
 
-    let track_id = first_item["id"].as_i64().ok_or("First result has no ID")?;
+    let selected_item = {
+        let first = &items[0];
+        let first_dur = first["duration"].as_i64().unwrap_or(0);
 
-    let track_url = format!("{}/track/?id={}&quality=LOSSLESS", api_base, track_id);
+        if (first_dur - target_secs).abs() <= 3 {
+            Some(first)
+        } else {
+            items.iter().skip(1).find(|item| {
+                let dur = item["duration"].as_i64().unwrap_or(0);
+                (dur - target_secs).abs() <= 1
+            })
+        }
+    };
+
+    let item = selected_item.ok_or("No results matched the duration criteria")?;
+    let track_id = item["id"].as_i64().ok_or("Selected result has no ID")?;
+
+    let quality = if config().peak_lossless_mode {
+        "HI_RES_LOSSLESS"
+    } else {
+        "LOSSLESS"
+    };
+
+    let track_url = format!("{}/track/?id={}&quality={}", api_base, track_id, quality);
+
     let track_data: Value = client.get(&track_url).send().await?.json().await?;
 
     let data = if track_data.get("data").is_some() {
@@ -88,7 +111,7 @@ pub async fn fetch_flac_stream_url(
     }
 
     if let Some(manifest) = data["manifest"].as_str() {
-        return decode_manifest(manifest);
+        return decode_manifest(manifest, track_id);
     }
 
     Err("No FLAC stream available for this track".into())
@@ -104,15 +127,34 @@ fn parse_to_seconds(duration_str: &str) -> i64 {
     duration_str.parse::<i64>().unwrap_or(0)
 }
 
-fn decode_manifest(encoded: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
+fn decode_manifest(encoded: &str, track_id: i64) -> Result<String, Box<dyn Error + Send + Sync>> {
     let decoded_bytes = BASE64_STANDARD.decode(encoded)?;
-    let decoded_str = String::from_utf8(decoded_bytes)?;
 
-    if let Some(start) = decoded_str.find("http") {
-        let end = decoded_str[start..]
-            .find('"')
-            .unwrap_or(decoded_str.len() - start);
-        return Ok(decoded_str[start..start + end].to_string());
+    if decoded_bytes.first().map(|&b| b == b'{').unwrap_or(false) {
+        if let Ok(json) = serde_json::from_slice::<Value>(&decoded_bytes) {
+            if let Some(url) = json["urls"]
+                .as_array()
+                .and_then(|arr| arr.get(0))
+                .and_then(|v| v.as_str())
+            {
+                return Ok(url.to_string());
+            }
+        }
     }
-    Err("Manifest decode failed".into())
+
+    if decoded_bytes.first().map(|&b| b == b'<').unwrap_or(false) {
+        let mut path = std::env::current_exe()?.parent().unwrap().to_path_buf();
+        path.push("music_data");
+        path.push("temp");
+        std::fs::create_dir_all(&path)?;
+
+        path.push(format!("{}.mpd", track_id));
+
+        let mut file = std::fs::File::create(&path)?;
+        file.write_all(&decoded_bytes)?;
+
+        return Ok(path.to_string_lossy().to_string());
+    }
+
+    Err("Manifest decode failed: Unknown format".into())
 }

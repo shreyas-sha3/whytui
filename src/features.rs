@@ -53,6 +53,22 @@ pub async fn fetch_synced_lyrics(
     let client = Client::new();
     let mut search_urls = Vec::new();
 
+    if let Some(artist1) = track.artists.get(0) {
+        // let first_name_of_artist_1 = artist.split_whitespace().next().unwrap_or(artist);
+        // /get
+        search_urls.push(format!(
+            "https://lrclib.net/api/get?track_name={}&artist_name={}&album={}&duration={}",
+            urlencoding::encode(
+                &if_title_contains_non_english_and_other_language_script_return_only_english_part(
+                    &track.title
+                )
+            ),
+            urlencoding::encode(artist1),
+            urlencoding::encode(&track.album),
+            duration_to_seconds(&track.duration)
+        ));
+    }
+    // /search
     let first_name_of_first_two_artists = track
         .artists
         .iter()
@@ -67,22 +83,20 @@ pub async fn fetch_synced_lyrics(
         urlencoding::encode(&first_name_of_first_two_artists),
     ));
 
-    for trimmed_artist in track.artists.iter().take(2) {
-        if !trimmed_artist.is_empty() {
-            let first_name_of_artist = trimmed_artist
-                .split_whitespace()
-                .next()
-                .unwrap_or(trimmed_artist);
-
-            // /get
-            search_urls.push(format!(
-                "https://lrclib.net/api/get?track_name={}&artist_name={}&album={}duration={}",
-                urlencoding::encode(&if_title_contains_non_english_and_other_language_script_return_only_english_part(&track.title)),
-                urlencoding::encode(first_name_of_artist),
-                urlencoding::encode(&track.album),
-                duration_to_seconds(&track.duration)
-            ));
-        }
+    // /get
+    if let Some(artist2) = track.artists.get(1) {
+        // let first_name_of_artist_2 = artist.split_whitespace().next().unwrap_or(artist);
+        search_urls.push(format!(
+            "https://lrclib.net/api/get?track_name={}&artist_name={}&album={}&duration={}",
+            urlencoding::encode(
+                &if_title_contains_non_english_and_other_language_script_return_only_english_part(
+                    &track.title
+                )
+            ),
+            urlencoding::encode(artist2),
+            urlencoding::encode(&track.album),
+            duration_to_seconds(&track.duration)
+        ));
     }
 
     for url in search_urls {
