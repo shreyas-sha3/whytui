@@ -61,6 +61,7 @@ curl.exe -L -o whytui.exe https://github.com/shreyas-sha3/whytui/releases/downlo
 | `[`   `]`     | Offset lyric by 100ms                  |
 | `c`           | Clear the queue                        |
 | `r`           | Toggle recently played                 |
+| `R`           | Repeat song (once or ∞)                |
 | `v`           | Toggle display modes                   |
 | `g`           | Take a guess of the quality            |
 | `t`           | Toggle romanize/translate              |

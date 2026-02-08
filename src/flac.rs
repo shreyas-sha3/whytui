@@ -147,15 +147,12 @@ fn decode_manifest(encoded: &str, track_id: i64) -> Result<String, Box<dyn Error
     }
 
     if decoded_bytes.first().map(|&b| b == b'<').unwrap_or(false) {
-        let mut path = std::env::current_exe()?.parent().unwrap().to_path_buf();
-        path.push("music_data");
+        let mut path = dirs::audio_dir().ok_or("Could not find audio directory")?;
+        path.push("whytui");
         path.push("temp");
-        std::fs::create_dir_all(&path)?;
-
+        std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
         path.push(format!("{}.mpd", track_id));
-
-        let mut file = std::fs::File::create(&path)?;
-        file.write_all(&decoded_bytes)?;
+        std::fs::write(&path, &decoded_bytes).map_err(|e| e.to_string())?;
 
         return Ok(path.to_string_lossy().to_string());
     }
