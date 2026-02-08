@@ -11,14 +11,18 @@ static ACTIVE_API: OnceCell<String> = OnceCell::const_new();
 
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const API_CANDIDATES: &[&str] = &[
+    "https://arran.monochrome.tf",
+    "https://api.monochrome.tf/",
     "https://triton.squid.wtf",
-    "https://tidal.kinoplus.online",
-    "https://tidal-api.binimum.org",
     "https://wolf.qqdl.site",
     "https://maus.qqdl.site",
     "https://vogel.qqdl.site",
     "https://katze.qqdl.site",
     "https://hund.qqdl.site",
+    "https://tidal.kinoplus.online",
+    "https://tidal-api.binimum.org",
+    "https://hifi-one.spotisaver.net",
+    "https://hifi-two.spotisaver.net",
 ];
 
 pub async fn init_api() -> Result<(), Box<dyn Error + Send + Sync>> {

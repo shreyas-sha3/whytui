@@ -32,7 +32,7 @@ pub fn play_file(
     } else {
         crate::PLAYING_LOSSLESS.store(false, Ordering::SeqCst);
     }
-
+let user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36,gzip(gfe)";
     let mut cmd = Command::new("mpv");
     cmd.arg("--no-video")
         .arg("--really-quiet")
@@ -40,6 +40,8 @@ pub fn play_file(
         .arg(format!("--input-ipc-server={}", ipc))
         .arg(format!("--volume={}", current_vol))
         .arg("--demuxer-lavf-o=protocol_whitelist=[file,http,https,tcp,tls,crypto,data]")
+        .arg(format!("--user-agent={}", user_agent))
+        .arg("--http-header-fields=Referer: https://music.youtube.com/,Origin: https://music.youtube.com")
         .arg(source)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -107,7 +109,7 @@ pub fn background_download(
 
     tag.set_title(track.title.clone());
 
-    tag.set_artist(track.artists.join("; "));
+    tag.set_artist(track.artists.join(", "));
 
     if !track.album.is_empty() {
         tag.set_album(track.album.clone());

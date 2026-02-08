@@ -109,6 +109,7 @@ pub static IS_LOSSLESS: AtomicBool = AtomicBool::new(false);
 pub static PLAYING_LOSSLESS: AtomicBool = AtomicBool::new(false);
 static VIEW_MODE: RwLock<String> = RwLock::new(String::new());
 static UI_MODE: AtomicUsize = AtomicUsize::new(0);
+static REPEAT_MODE: AtomicUsize = AtomicUsize::new(0);
 
 //LIST OF SONGS FROM A PLAYLIST
 static LIBRARY_SONG_LIST: RwLock<Vec<SongDetails>> = RwLock::new(Vec::new());
@@ -265,84 +266,102 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // }
 
         // -------------------------------------------------------------------
-        // PART 4 - CHECK IF A SONG IS PLAYING ALREADY
-        // -------------------------------------------------------------------
-        if let Some(child) = &mut currently_playing {
-            // Reaping previous song instance thus mutable reference needed ( also to check if finished naturally)
-            // if finished fully move song from /temp folder to music_dir
-            //
-            if let Ok(Some(_)) = child.try_wait() {
-                ui_common::clear_lyrics();
-
-                if let Some(track) = &current_track {
-                    add_to_history(track.clone());
-
-                    if config().download_mode && track.url.starts_with("http")
-                        || track.url.ends_with(".mpd")
-                    {
-                        let track_clone = track.clone();
-                        let music_dir_clone = music_dir.clone();
-                        let url_clone = track.url.clone();
-
-                        std::thread::spawn(move || {
-                            if let Err(e) = player::background_download(
-                                &url_clone,
-                                &track_clone,
-                                &music_dir_clone,
-                            ) {
-                                eprintln!("Download failed: {}", e);
-                            }
-                        });
-                    }
-                }
-
-                currently_playing = None;
-
-                // -------------------------------------------------------------------
-                // CASE 2 : WHEN NO SONG IS PLAYING CURRENTLY
-                // -------------------------------------------------------------------
-                if let Some(track) = queue_next() {
-                    //Check queue first - If yes play next in queue
-                    current_track = Some(track.clone());
-                    currently_playing = Some(player::play_file(&track.url, &track, &music_dir)?);
-
-                    // -------------------------------------------------------------------
-                    // CASE 2.1 : IF AUTOPLAY IS ENABLED (DEFAULT MODE)
-                    // -------------------------------------------------------------------
-                    if !config().no_autoplay {
+                        // PART 4 - CHECK IF A SONG IS PLAYING ALREADY
                         // -------------------------------------------------------------------
-                        // CASE 2.1.1 : IF USER IS IN OFFLINE MODE (POPULATE FROM OFFLINE.RS)
-                        // -------------------------------------------------------------------
-                        if config().offline_mode {
-                            let exclude = get_excluded_titles();
-                            {
-                                let mut q = SONG_QUEUE.write().unwrap();
-                                offline::populate_queue_offline(&music_dir, &mut q, &exclude);
+                        if let Some(child) = &mut currently_playing {
+                            // Reaping previous song instance thus mutable reference needed ( also to check if finished naturally)
+                            // if finished fully move song from /temp folder to music_dir
+                            //
+                            if let Ok(Some(_)) = child.try_wait() {
+                                ui_common::clear_lyrics();
+
+                                if let Some(track) = &current_track {
+                                    add_to_history(track.clone());
+
+                                    if config().download_mode
+                                        && (track.url.starts_with("http") || track.url.ends_with(".mpd"))
+                                    {
+                                        let track_clone = track.clone();
+                                        let music_dir_clone = music_dir.clone();
+                                        let url_clone = track.url.clone();
+
+                                        std::thread::spawn(move || {
+                                            if let Err(e) = player::background_download(
+                                                &url_clone,
+                                                &track_clone,
+                                                &music_dir_clone,
+                                            ) {
+                                                eprintln!("Download failed: {}", e);
+                                            }
+                                        });
+                                    }
+                                }
+
+                                currently_playing = None;
+
+                                // -------------------------------------------------------------------
+                                // CASE 2 : WHEN NO SONG IS PLAYING CURRENTLY
+                                // -------------------------------------------------------------------
+                                //
+                                let should_repeat = REPEAT_MODE.load(Ordering::Relaxed);
+
+                                if let Some(track) = &current_track {
+                                    if should_repeat > 0 {
+                                        currently_playing =
+                                            Some(player::play_file(&track.url, track, &music_dir)?);
+                                        if should_repeat == 1 {
+                                        REPEAT_MODE.store(0, Ordering::Relaxed);
+                                        }
+                                    }
+                                }
+
+                                //if not repeating play from queue
+                                if currently_playing.is_none() {
+                                    if let Some(track) = queue_next() {
+                                        current_track = Some(track.clone());
+                                        currently_playing =
+                                            Some(player::play_file(&track.url, &track, &music_dir)?);
+
+                                        // -------------------------------------------------------------------
+                                        // CASE 2.1 : IF AUTOPLAY IS ENABLED (DEFAULT MODE)
+                                        // -------------------------------------------------------------------
+                                        if !config().no_autoplay {
+                                            // -------------------------------------------------------------------
+                                            // CASE 2.1.1 : IF USER IS IN OFFLINE MODE (POPULATE FROM OFFLINE.RS)
+                                            // -------------------------------------------------------------------
+                                            if config().offline_mode {
+                                                let exclude = get_excluded_titles();
+                                                {
+                                                    let mut q = SONG_QUEUE.write().unwrap();
+                                                    offline::populate_queue_offline(
+                                                        &music_dir, &mut q, &exclude,
+                                                    );
+                                                }
+                                            }
+                                            // -------------------------------------------------------------------
+                                            // CASE 2.1.2 : IF USER IS IN ONLINE MODE (CALL AUTO ADD FUNCTION)
+                                            // -------------------------------------------------------------------
+                                            else if let Some(vid) = &track.video_id {
+                                                let yt = yt_client.clone();
+                                                let v = vid.clone();
+                                                tokio::spawn(async move {
+                                                    queue_auto_add_online(yt, v).await;
+                                                });
+                                            }
+                                        }
+                                        refresh_ui(Some(&track));
+                                    }
+                                    // -------------------------------------------------------------------
+                                    // CASE 2.2 : IF AUTOPLAY IS DISABLED (JUST STOP PLAYBACK)
+                                    // -------------------------------------------------------------------
+                                    else {
+                                        current_track = None;
+                                        crate::IS_PLAYING.store(false, Ordering::SeqCst);
+                                        refresh_ui(Some(&Track::dummy()));
+                                    }
+                                }
                             }
                         }
-                        // -------------------------------------------------------------------
-                        // CASE 2.1.2 : IF USER IS IN ONLINE MODE (CALL AUTO ADD FUNCTION)
-                        // -------------------------------------------------------------------
-                        else if let Some(vid) = &track.video_id {
-                            let yt = yt_client.clone();
-                            let v = vid.clone();
-                            tokio::spawn(async move {
-                                queue_auto_add_online(yt, v).await;
-                            });
-                        }
-                    }
-                    refresh_ui(Some(&track));
-                }
-                // -------------------------------------------------------------------
-                // CASE 2.1 : IF AUTOPLAY IS DISABLED (JUST STOP PLAYBACK)
-                // -------------------------------------------------------------------
-                else {
-                    current_track = None;
-                    crate::IS_PLAYING.store(false, Ordering::SeqCst);
-                    refresh_ui(Some(&Track::dummy()));
-                }
-            }
-        }
 
         //
         //
@@ -513,16 +532,16 @@ async fn handle_global_commands(
             refresh_ui(None);
             std::process::exit(0);
         }
-        "s" | "stop" => {
-            if let Some(track) = current_track {
-                add_to_history(track.clone());
-                player::stop_process(currently_playing, &track.title, music_dir);
-            }
-            *current_track = None;
-            refresh_ui(None);
-            set_status_line(Some(format!("STOPPED SONG")));
-            return true;
-        }
+        // "s" | "stop" => {
+        //     if let Some(track) = current_track {
+        //         add_to_history(track.clone());
+        //         player::stop_process(currently_playing, &track.title, music_dir);
+        //     }
+        //     *current_track = None;
+        //     refresh_ui(None);
+        //     set_status_line(Some(format!("STOPPED SONG")));
+        //     return true;
+        // }
         "c" | "clear" => {
             SONG_QUEUE.write().unwrap().clear();
             set_status_line(Some(format!("QUEUE CLEARED")));
@@ -665,7 +684,21 @@ async fn handle_global_commands(
             refresh_ui(None);
             return true;
         }
+        "R" | "repeat" => {
+                    let current_repeat = REPEAT_MODE.load(Ordering::Relaxed);
+                    let next_repeat_mode = (current_repeat + 1) % 3;
 
+                    REPEAT_MODE.store(next_repeat_mode, Ordering::Relaxed);
+                    let status = if next_repeat_mode == 0 {
+                        "No Repeat"
+                    } else if next_repeat_mode == 1 {
+                        "Repeat Once"
+                    } else {
+                        "Repeat Forever"
+                    };
+                    set_status_line(Some(status.to_string()));
+                    return true;
+                }
         "n" | "next" => {
             if let Some(track) = current_track {
                 add_to_history(track.clone());
@@ -1282,9 +1315,12 @@ pub fn spawn_input_handler(tx: Sender<String>) {
                             KeyCode::Char('r') => {
                                 let _ = tx.send("r".into());
                             }
-                            KeyCode::Char('s') => {
-                                let _ = tx.send("s".into());
+                            KeyCode::Char('R') => {
+                                let _ = tx.send("R".into());
                             }
+                            // KeyCode::Char('s') => {
+                            //     let _ = tx.send("s".into());
+                            // }
                             KeyCode::Char('g') => {
                                 let _ = tx.send("g".into());
                             }

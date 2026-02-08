@@ -271,8 +271,10 @@ where
 fn spawn_lyrics_fetcher(track: Track) {
     tokio::spawn(async move {
         let result = fetch_synced_lyrics(&track).await;
+        LYRIC_OFFSET.store(0, Ordering::Relaxed);
 
         if *CURRENT_LYRIC_SONG.read().unwrap() != track.title {
+            LYRICS.write().unwrap().clear();
             return;
         }
 

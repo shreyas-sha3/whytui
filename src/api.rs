@@ -11,6 +11,8 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::io::Write;
+use std::process::Command;
 
 #[derive(Debug, Clone)]
 pub struct SongDetails {
@@ -75,12 +77,12 @@ impl YTMusic {
             HeaderValue::from_static("en-GB,en;q=0.9"),
         );
         common_headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        common_headers.insert(
-            "Sec-Ch-Ua",
-            HeaderValue::from_static("\"Not_A Brand\";v=\"99\", \"Chromium\";v=\"142\""),
-        );
-        common_headers.insert("Sec-Ch-Ua-Mobile", HeaderValue::from_static("?0"));
-        common_headers.insert("Sec-Ch-Ua-Platform", HeaderValue::from_static("\"Linux\""));
+        // common_headers.insert(
+        //     "Sec-Ch-Ua",
+        //     HeaderValue::from_static("\"Not_A Brand\";v=\"99\", \"Chromium\";v=\"142\""),
+        // );
+        // common_headers.insert("Sec-Ch-Ua-Mobile", HeaderValue::from_static("?0"));
+        // common_headers.insert("Sec-Ch-Ua-Platform", HeaderValue::from_static("\"Linux\""));
         common_headers.insert(
             ORIGIN,
             HeaderValue::from_static("https://music.youtube.com"),
@@ -139,93 +141,137 @@ impl YTMusic {
         Ok(res.json().await?)
     }
 
+    // pub async fn fetch_stream_url(&self, video_id: &str) -> Result<String, Box<dyn Error>> {
+    //     let payload = json!({
+    //         "videoId": video_id,
+    //         "context": {
+    //             "client": {
+    //                 "hl": "en",
+    //                 "gl": "IN",
+    //                 "remoteHost": "123.185.130.321",
+    //                 "deviceMake": "",
+    //                 "deviceModel": "",
+    //                 "visitorData": "CgtYTkZURlh1U0hIdyjrzYrKBjIKCgJJThIEGgAgOw%3D%3D",
+    //                 "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36,gzip(gfe)",
+    //                 "clientName": "ANDROID",
+    //                 "clientVersion": "19.09.37",
+    //                 "osName": "X11",
+    //                 "osVersion": "",
+    //                 "originalUrl": "https://music.youtube.com/",
+    //                 "platform": "DESKTOP",
+    //                 "clientFormFactor": "UNKNOWN_FORM_FACTOR",
+    //                 "configInfo": {
+    //                     "appInstallData": "COvNisoGEMj3zxwQudnOHBDyndAcEL22rgUQlLbQHBCZjbEFEJX3zxwQ0eDPHBDhgoATENr3zhwQlP6wBRDatNAcEKefqRcQg57QHBCNsNAcEMGP0BwQmrnQHBDYltAcEI-50BwQvKTQHBD2q7AFENPhrwUQzN-uBRDKu9AcEK7WzxwQpbbQHBCd0LAFEIzpzxwQooW4IhDxnLAFEIeszhwQzrPQHBCBzc4cEJOD0BwQnNfPHBD8ss4cEMn3rwUQg6zQHBDevM4cELnA0BwQ5ofQHBC8s4ATEMzrzxwQvZmwBRC8v9AcEL2KsAUQlPLPHBDHttAcEKudzxwQ28HQHBC36v4SEKafqRcQ8rPQHBDwtNAcEIiHsAUQu9nOHBCL988cEPCdzxwQltvPHBDlpNAcELjkzhwQ4cGAExCJsM4cEMWM0BwQr7CAEypMQ0FNU014VW8tWnEtRE1lVUVvY09xZ0xNQmJiUDhBc3l2MV9wMVFVRHpmOEZvWUFHb2k3UDFBYjBMX1lQN3pDVzNRV1R2Z1lkQnc9PTAA"
+    //                 },
+    //                 "browserName": "Chrome",
+    //                 "browserVersion": "142.0.0.0"
+    //             },
+    //             "user": {
+    //                 "lockedSafetyMode": false
+    //             },
+    //             "request": {
+    //                 "useSsl": true,
+    //                 "internalExperimentFlags": [],
+    //                 "consistencyTokenJars": []
+    //             },
+    //             "playbackContext": {
+    //                 "contentPlaybackContext": {
+    //                     "html5Preference": "HTML5_PREF_WANTS",
+    //                     "signatureTimestamp": 20436,
+    //                     "autoCaptionsDefaultOn": false
+    //                 }
+    //             }
+    //         }
+    //     });
+
+    //     if let Ok(mut file) = File::create("debug_req.json") {
+    //         let _ = file.write_all(serde_json::to_string_pretty(&payload).unwrap().as_bytes());
+    //         println!("> Debug: Request payload written to debug_req.json");
+    //     }
+
+
+    //     let res = self.guest_client
+    //         .post("https://music.youtube.com/youtubei/v1/player?key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30")
+    //         .json(&payload)
+    //         .send()
+    //         .await?;
+
+    //     let data: Value = res.json().await?;
+
+    //     if let Ok(mut file) = File::create("debug_res.json") {
+    //         let _ = file.write_all(serde_json::to_string_pretty(&data).unwrap().as_bytes());
+    //         println!("> Debug: Response data written to debug_res.json");
+    //     }
+
+
+    //     if let Some(status) = data
+    //         .pointer("/playabilityStatus/status")
+    //         .and_then(|s| s.as_str())
+    //     {
+    //         if status != "OK" {
+    //             let reason = data
+    //                 .pointer("/playabilityStatus/reason")
+    //                 .and_then(|s| s.as_str())
+    //                 .unwrap_or("Unknown error");
+    //             return Err(format!("Video unavailable: {}", reason).into());
+    //         }
+    //     }
+
+    //     let formats = data
+    //         .pointer("/streamingData/adaptiveFormats")
+    //         .and_then(|v| v.as_array())
+    //         .ok_or("No formats found")?;
+
+    //     let best = formats
+    //         .iter()
+    //         .filter(|f| {
+    //             f["mimeType"]
+    //                 .as_str()
+    //                 .unwrap_or("")
+    //                 .starts_with("audio/webm")
+    //         })
+    //         .max_by_key(|f| f["bitrate"].as_i64().unwrap_or(0))
+    //         .ok_or("No suitable audio stream found")?;
+
+    //     if let Some(url) = best["url"].as_str() {
+    //         Ok(url.to_string())
+    //     } else {
+
+    //         Err("URL is encrypted (Signature Cipher). Check debug_res.json".into())
+    //     }
+    // }
+
+    //
+
+    //OG method not working? temp replacement
+
+
     pub async fn fetch_stream_url(&self, video_id: &str) -> Result<String, Box<dyn Error>> {
-        let payload = json!({
-            "videoId": video_id,
-            "context": {
-                "client": {
-                    "hl": "en",
-                    "gl": "IN",
-                    "remoteHost": "123.185.130.321",
-                    "deviceMake": "",
-                    "deviceModel": "",
-                    "visitorData": "CgtYTkZURlh1U0hIdyjrzYrKBjIKCgJJThIEGgAgOw%3D%3D",
-                    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36,gzip(gfe)",
-                    "clientName": "ANDROID",
-                    "clientVersion": "19.09.37",
-                    "osName": "X11",
-                    "osVersion": "",
-                    "originalUrl": "https://music.youtube.com/",
-                    "platform": "DESKTOP",
-                    "clientFormFactor": "UNKNOWN_FORM_FACTOR",
-                    "configInfo": {
-                        "appInstallData": "COvNisoGEMj3zxwQudnOHBDyndAcEL22rgUQlLbQHBCZjbEFEJX3zxwQ0eDPHBDhgoATENr3zhwQlP6wBRDatNAcEKefqRcQg57QHBCNsNAcEMGP0BwQmrnQHBDYltAcEI-50BwQvKTQHBD2q7AFENPhrwUQzN-uBRDKu9AcEK7WzxwQpbbQHBCd0LAFEIzpzxwQooW4IhDxnLAFEIeszhwQzrPQHBCBzc4cEJOD0BwQnNfPHBD8ss4cEMn3rwUQg6zQHBDevM4cELnA0BwQ5ofQHBC8s4ATEMzrzxwQvZmwBRC8v9AcEL2KsAUQlPLPHBDHttAcEKudzxwQ28HQHBC36v4SEKafqRcQ8rPQHBDwtNAcEIiHsAUQu9nOHBCL988cEPCdzxwQltvPHBDlpNAcELjkzhwQ4cGAExCJsM4cEMWM0BwQr7CAEypMQ0FNU014VW8tWnEtRE1lVUVvY09xZ0xNQmJiUDhBc3l2MV9wMVFVRHpmOEZvWUFHb2k3UDFBYjBMX1lQN3pDVzNRV1R2Z1lkQnc9PTAA"
-                    },
-                    "browserName": "Chrome",
-                    "browserVersion": "142.0.0.0"
-                },
-                "user": {
-                    "lockedSafetyMode": false
-                },
-                "request": {
-                    "useSsl": true,
-                    "internalExperimentFlags": [],
-                    "consistencyTokenJars": []
-                },
-                "playbackContext": {
-                    "contentPlaybackContext": {
-                        "html5Preference": "HTML5_PREF_WANTS",
-                        "signatureTimestamp": 20436,
-                        "autoCaptionsDefaultOn": false
-                    }
-                }
-            }
-        });
+        let video_url = format!("https://music.youtube.com/watch?v={}", video_id);
 
-        let res = self.guest_client
-            .post("https://music.youtube.com/youtubei/v1/player?key=AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30")
-            .json(&payload)
-            .send()
-            .await?;
+        let output = tokio::task::spawn_blocking(move || {
+            Command::new("yt-dlp")
+                .arg("-f")
+                .arg("bestaudio")
+                .arg("-g")
+                .arg(video_url)
+                .output()
+        })
+        .await??;
 
-        let data: Value = res.json().await?;
-
-        if let Some(status) = data
-            .pointer("/playabilityStatus/status")
-            .and_then(|s| s.as_str())
-        {
-            if status != "OK" {
-                let reason = data
-                    .pointer("/playabilityStatus/reason")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("Unknown error");
-                return Err(format!("Video unavailable: {}", reason).into());
-            }
+        if !output.status.success() {
+            let err_msg = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("yt-dlp failed to get stream URL: {}", err_msg).into());
         }
 
-        let formats = data
-            .pointer("/streamingData/adaptiveFormats")
-            .and_then(|v| v.as_array())
-            .ok_or("No formats found")?;
+        let stream_url = String::from_utf8(output.stdout)?.trim().to_string();
 
-        let best = formats
-            .iter()
-            .filter(|f| {
-                f["mimeType"]
-                    .as_str()
-                    .unwrap_or("")
-                    .starts_with("audio/webm")
-            })
-            .max_by_key(|f| f["bitrate"].as_i64().unwrap_or(0))
-            .ok_or("No suitable audio stream found")?;
-
-        if let Some(url) = best["url"].as_str() {
-            Ok(url.to_string())
-        } else {
-            Err("URL is encrypted (Signature Cipher).".into())
+        if stream_url.is_empty() {
+            return Err("yt-dlp returned an empty URL".into());
         }
+
+        Ok(stream_url)
     }
-
     pub async fn like_song(&self, video_id: &str) -> Result<(), Box<dyn Error>> {
         let url = "https://music.youtube.com/youtubei/v1/like/like";
         let body = json!({
